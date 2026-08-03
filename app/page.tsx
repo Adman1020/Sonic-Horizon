@@ -399,6 +399,34 @@ export default function Home() {
     setArtistsOpen(o => !o);
   };
 
+  const handleClearSource = async (source: 'spotify' | 'lastfm') => {
+    const label = source === 'spotify' ? 'Spotify' : 'Last.fm';
+    if (!window.confirm(
+      `Clear all ${label} data?\n\nThis removes every imported ${label} play and artist, resets your ${label} profile to empty, and disconnects ${label}. This cannot be undone.`
+    )) return;
+    try {
+      const res = await fetch('/api/data/reset', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ source }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      setUser(prev => prev ? {
+        ...prev,
+        knownArtistCount: data.remainingArtists,
+        spotifyConnected: source === 'spotify' ? false : prev.spotifyConnected,
+        lastFmConnected: source === 'lastfm' ? false : prev.lastFmConnected,
+        settings: source === 'lastfm' ? { ...prev.settings, lastFmUsername: null } : prev.settings,
+      } : prev);
+      setArtistsLoaded(false);
+      setArtists([]);
+      addLog(data.message, 'success');
+    } catch (e: unknown) {
+      addLog(`Failed to clear ${label} data: ${e instanceof Error ? e.message : 'Error'}`, 'error');
+    }
+  };
+
   const handleFileUpload = async (file: File, type: 'endsong' | 'lastfm_csv') => {
     const isLastFm = type === 'lastfm_csv';
     const setStatus = isLastFm ? setLastFmUploadStatus : setSpotifyUploadStatus;
@@ -649,6 +677,20 @@ OUTPUT JSON SCHEMA:
               </button>
             </div>
             <StatusMsg text={lastFmStatus} />
+
+            {/* Danger zone */}
+            <div className="flex items-center justify-between rounded-lg px-4 py-3 border" style={{ borderColor: 'rgba(255,61,61,0.3)', background: 'rgba(255,61,61,0.05)' }}>
+              <span className="text-xs text-analog-text-muted">
+                Want to start over with a different account? <strong className="text-red-400">Clears all Last.fm data &amp; disconnects.</strong>
+              </span>
+              <button onClick={() => handleClearSource('lastfm')}
+                className="px-3 py-1.5 text-xs font-semibold rounded border transition-colors whitespace-nowrap ml-3"
+                style={{ borderColor: '#FF3D3D', color: '#FF3D3D' }}
+                onMouseEnter={e => (e.currentTarget.style.background = 'rgba(255,61,61,0.15)')}
+                onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}>
+                Clear Last.fm data
+              </button>
+            </div>
           </div>
 
           {/* Divider */}
@@ -883,6 +925,20 @@ OUTPUT JSON SCHEMA:
               <p className="text-xs text-analog-text-muted mt-1.5">
                 All on by default. Unticked sources are skipped on the next refresh.
               </p>
+            </div>
+
+            {/* Danger zone */}
+            <div className="flex items-center justify-between rounded-lg px-4 py-3 border" style={{ borderColor: 'rgba(255,61,61,0.3)', background: 'rgba(255,61,61,0.05)' }}>
+              <span className="text-xs text-analog-text-muted">
+                Want to start over with a different account? <strong className="text-red-400">Clears all Spotify data &amp; disconnects.</strong>
+              </span>
+              <button onClick={() => handleClearSource('spotify')}
+                className="px-3 py-1.5 text-xs font-semibold rounded border transition-colors whitespace-nowrap ml-3"
+                style={{ borderColor: '#FF3D3D', color: '#FF3D3D' }}
+                onMouseEnter={e => (e.currentTarget.style.background = 'rgba(255,61,61,0.15)')}
+                onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}>
+                Clear Spotify data
+              </button>
             </div>
           </div>
 
