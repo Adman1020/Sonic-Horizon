@@ -1,23 +1,4 @@
 // Last.fm Ingestion Service
-const LASTFM_API_URL = 'https://ws.audioscrobbler.com/2.0/';
-const API_KEY = process.env.LASTFM_API_KEY ?? '';
-
-export async function fetchLastFmTopArtists(username: string, limit: number = 50) {
-  const url = `${LASTFM_API_URL}?method=user.gettopartists&user=${username}&api_key=${API_KEY}&format=json&limit=${limit}`;
-  const response = await fetch(url);
-  if (!response.ok) throw new Error('Failed to fetch Last.fm top artists');
-  const data = await response.json();
-  return data.topartists?.artist || [];
-}
-
-export async function fetchLastFmRecentTracks(username: string, limit: number = 50) {
-  const url = `${LASTFM_API_URL}?method=user.getrecenttracks&user=${username}&api_key=${API_KEY}&format=json&limit=${limit}`;
-  const response = await fetch(url);
-  if (!response.ok) throw new Error('Failed to fetch Last.fm recent tracks');
-  const data = await response.json();
-  return data.recenttracks?.track || [];
-}
-
 export function parseLastFmCsv(csvContent: string) {
   // Simple CSV parser for Last.fm exports
   const lines = csvContent.split('\n');
