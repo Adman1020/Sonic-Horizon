@@ -105,7 +105,6 @@ export default function Login() {
             <input 
               type="password" 
               required
-              minLength={12}
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               autoCapitalize="none"
