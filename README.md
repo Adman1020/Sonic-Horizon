@@ -63,9 +63,8 @@ The container mounts these volumes (all defined in `docker-compose.yml`):
 
 | Volume | Purpose |
 | ------ | ------- |
-| `db-data` (named volume) | SQLite database (`pde.db`) — kept on a named volume so WAL-mode writes stay on the container VM's native filesystem |
+| `db-data` (named volume) | Everything the app persists — SQLite database (`pde.db`) and uploaded JSON/CSV listening-data files — kept on a named volume so WAL-mode writes stay on the container VM's native filesystem |
 | `./config` | Config files |
-| `./uploads` | Uploaded JSON/CSV listening-data files |
 
 ### Unraid
 
@@ -74,10 +73,36 @@ The app publishes a ready-to-use template via the
 
 - Image: `ghcr.io/adman1020/sonic-horizon:latest`
 - WebUI: port **8080**
-- App data: `/mnt/user/appdata/sonichorizon` (mapped to `/config`)
+- App data: whatever folder you set in the Unraid UI (mapped to `/config`)
 
-Add the template, point it at the image, start the container, and hit the WebUI to do the
-first-run admin setup.
+**Everything lives in the single AppData folder you choose in the UI.** The template exposes one
+path — **App Data** (`/config`) — and the app writes its database (`pde.db`), encrypted settings,
+and all uploaded listening-data files inside that folder. No other folders are created: on Unraid
+a `/config` path is auto-filled to `/mnt/user/appdata/<container-name>` (e.g. `SonicHorizon`), and
+whatever you set there is what gets used — honor it in the UI and that's where everything goes.
+
+If you previously saw two folders (e.g. `SonicHorizon` and `sonichorizon`), that was an old
+template bug: a second hard-coded `Uploads Data` mount sent uploads to a different folder than the
+database. The updated template removes that second mount. Keep the folder your container's **App
+Data** mapping points at (check the container's **Edit** screen), and delete the other.
+
+**Environment variables — no `.env` file needed.** Unraid containers get env vars from the
+template, not a `.env`. The template includes `JWT_SECRET` and `ENCRYPTION_SECRET` fields:
+
+1. In the Unraid WebGUI, go to **Docker → your SonicHorizon container → Edit** (Advanced View).
+2. Generate the two values (run this twice, once per field):
+   ```bash
+   openssl rand -hex 32
+   ```
+3. Set **JWT Secret** and **Encryption Secret** to those values and hit **Apply**.
+
+The app refuses to start until both are set. If you're updating an existing container that was
+created before these fields existed, add them manually under **Add another Path, Port, Variable**
+→ **Variable** (`JWT_SECRET` / `ENCRYPTION_SECRET`), or re-create the container from the updated
+template (keep the same AppData path so your data persists).
+
+The Unraid docker-screen icon is pulled from
+`public/icon.svg` in this repo and matches the header/favicon logo.
 
 ### Environment variables (before first run)
 
@@ -99,6 +124,9 @@ go in `.env`; each user enters their own in the app (see below).
 `DATABASE_URL` is set inside `docker-compose.yml` (`file:/data/db/pde.db`) — no need to
 touch it. When running the Unraid template (which has no compose file), it defaults to
 `file:/config/pde.db`, so the database lives inside your AppData folder.
+
+> **On Unraid there is no `.env` file** — set these two values as template variables in the
+> container's edit screen instead (see [Unraid](#unraid) above).
 
 ## Integrations & what you'll need
 
