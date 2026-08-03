@@ -47,6 +47,9 @@ export async function middleware(request: NextRequest) {
 
 export const config = {
   matcher: [
-    '/((?!api/auth|api/spotify/callback|login|_next/static|_next/image|favicon.ico|sitemap.xml|robots.txt).*)',
+    // Exclude auth/spotify callback, the login page, Next.js internals, and
+    // any static file (public/ assets carry a file extension) so they load
+    // without an auth cookie instead of being redirected to /login.
+    '/((?!api/auth|api/spotify/callback|login|_next/static|_next/image|favicon.ico|sitemap.xml|robots.txt|.*\\..*).*)',
   ],
 };
