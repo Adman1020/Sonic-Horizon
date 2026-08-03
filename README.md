@@ -30,7 +30,7 @@ The result is written straight into your Spotify account:
 - **`Sonic Horizon`** — the latest generation run (replaced every sync)
 - **`Sonic Horizon Archive`** — an append-only, **duplicate-free** history of every recommendation ever made
 
-![Sonic Horizon login](public/screenshot-login.png)
+![Sonic Horizon](public/screenshot.png)
 
 ## Features
 
