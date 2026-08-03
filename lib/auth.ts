@@ -2,7 +2,8 @@ import { SignJWT, jwtVerify } from 'jose';
 import bcrypt from 'bcrypt';
 import { cookies } from 'next/headers';
 
-const secretKey = process.env.JWT_SECRET || 'super-secret-fallback-key-do-not-use-in-prod';
+const secretKey = process.env.JWT_SECRET;
+if (!secretKey) throw new Error('JWT_SECRET environment variable is required.');
 const key = new TextEncoder().encode(secretKey);
 
 export async function hashPassword(password: string): Promise<string> {

@@ -80,8 +80,9 @@ first-run admin setup.
 
 ### Environment variables
 
-Create a `.env` next to `docker-compose.yml` (a `.env.example` values are shown below). Generate
-strong random secrets with `openssl rand -hex 32`.
+Copy `.env.example` to `.env` and fill in your own values. Generate strong random secrets with
+`openssl rand -hex 32` — `docker compose` will refuse to start until `JWT_SECRET` and
+`ENCRYPTION_SECRET` are set.
 
 | Variable | Required | Description |
 | -------- | -------- | ----------- |

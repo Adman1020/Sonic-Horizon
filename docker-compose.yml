@@ -12,15 +12,10 @@ services:
     environment:
       - NODE_ENV=production
       - DATABASE_URL=file:/config/pde.db
-      # Generate a strong random secret: openssl rand -hex 32
-      - JWT_SECRET=change-me-to-a-long-random-secret
-      # Generate a strong random secret: openssl rand -hex 32
-      - ENCRYPTION_SECRET=change-me-to-another-random-secret
-      # Register a free API key at last.fm/api/account/create
-      - LASTFM_API_KEY=
-      # Register a Spotify app at developer.spotify.com/dashboard
-      - SPOTIFY_CLIENT_ID=
-      - SPOTIFY_CLIENT_SECRET=
-      # Must match exactly what you registered in Spotify dashboard
-      - SPOTIFY_REDIRECT_URI=http://localhost:8080/api/spotify/callback
+      - JWT_SECRET=${JWT_SECRET:?JWT_SECRET missing - add it to .env}
+      - ENCRYPTION_SECRET=${ENCRYPTION_SECRET:?ENCRYPTION_SECRET missing - add it to .env}
+      - LASTFM_API_KEY=${LASTFM_API_KEY:-}
+      - SPOTIFY_CLIENT_ID=${SPOTIFY_CLIENT_ID:-}
+      - SPOTIFY_CLIENT_SECRET=${SPOTIFY_CLIENT_SECRET:-}
+      - SPOTIFY_REDIRECT_URI=${SPOTIFY_REDIRECT_URI:-http://localhost:8080/api/spotify/callback}
     restart: unless-stopped
