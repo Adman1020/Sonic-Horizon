@@ -1,6 +1,6 @@
 // Last.fm Ingestion Service
 const LASTFM_API_URL = 'https://ws.audioscrobbler.com/2.0/';
-const API_KEY = process.env.LASTFM_API_KEY || 'your_lastfm_api_key_here'; // Fallback or provided key
+const API_KEY = process.env.LASTFM_API_KEY ?? '';
 
 export async function fetchLastFmTopArtists(username: string, limit: number = 50) {
   const url = `${LASTFM_API_URL}?method=user.gettopartists&user=${username}&api_key=${API_KEY}&format=json&limit=${limit}`;

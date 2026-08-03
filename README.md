@@ -63,9 +63,6 @@ The container mounts two volumes:
 | `./config` | SQLite database + encrypted settings (`pde.db`) |
 | `./uploads` | Uploaded JSON/CSV listening-data files |
 
-> Set `SPOTIFY_REDIRECT_URI=http://localhost:8080/api/spotify/callback` if you open the app from
-> a different host — see [Spotify setup](#spotify) below.
-
 ### Unraid
 
 The app publishes a ready-to-use template via the
@@ -78,23 +75,32 @@ The app publishes a ready-to-use template via the
 Add the template, point it at the image, start the container, and hit the WebUI to do the
 first-run admin setup.
 
-### Environment variables
+### Environment variables (before first run)
 
-Copy `.env.example` to `.env` and fill in your own values. Generate strong random secrets with
-`openssl rand -hex 32` — `docker compose` will refuse to start until `JWT_SECRET` and
-`ENCRYPTION_SECRET` are set.
+The `.env` needs **exactly two things** — nothing else. Spotify/Last.fm/LLM credentials do **not**
+go in `.env`; each user enters their own in the app (see below).
 
-| Variable | Required | Description |
-| -------- | -------- | ----------- |
-| `JWT_SECRET` | ✅ | Session signing secret. **Generate one.** |
-| `ENCRYPTION_SECRET` | ✅ | Used to encrypt stored API keys. **Generate one.** |
-| `SPOTIFY_CLIENT_ID` | Spotify only | OAuth client ID (can also be set per-user in the UI) |
-| `SPOTIFY_CLIENT_SECRET` | Spotify only | OAuth client secret (can also be set per-user in the UI) |
-| `SPOTIFY_REDIRECT_URI` | Spotify only | Must exactly match what you registered in the Spotify dashboard |
-| `LASTFM_API_KEY` | Last.fm only | For Last.fm history matching |
-| `DATABASE_URL` | – | Defaults to `file:/config/pde.db` |
+1. Copy the template: `cp .env.example .env`
+2. Generate two random secrets and paste them in:
+   ```bash
+   openssl rand -hex 32   # run this twice, once per variable
+   ```
+   `docker compose` will refuse to start until both are set.
+
+| Variable | Required | What it's for |
+| -------- | -------- | ------------- |
+| `JWT_SECRET` | ✅ | Signs login sessions |
+| `ENCRYPTION_SECRET` | ✅ | Encrypts each user's saved API keys at rest |
+
+`DATABASE_URL` is preconfigured (`file:/config/pde.db`) — no need to touch it.
 
 ## Integrations & what you'll need
+
+> **What goes where:**
+> - **`.env`** → only `JWT_SECRET` and `ENCRYPTION_SECRET`.
+> - **In the app's Settings page (per user)** → Spotify Client ID + Secret, your Spotify callback
+>   URL, Last.fm API key + username, and your LLM provider key. These are stored **encrypted in
+>   the database**, so each user supplies their own credentials.
 
 The app needs **one LLM provider** to function, and **Spotify** (and optionally **Last.fm**) to
 feed it your listening history.
@@ -102,10 +108,11 @@ feed it your listening history.
 ### Spotify
 
 1. Go to the [Spotify Developer Dashboard](https://developer.spotify.com/dashboard) and create an app.
-2. Under **Settings**, add your Redirect URI — e.g. `http://localhost:8080/api/spotify/callback`
-   (must match what the app uses).
-3. Copy the **Client ID** and **Client Secret** into `.env`, **or** paste them into the app's
-   Settings page (they're stored encrypted per-user).
+2. Under **Settings**, add your Redirect URI — `http://[your-host]:8080/api/spotify/callback`
+   (e.g. `http://localhost:8080/api/spotify/callback`). The app derives the callback from the URL
+   you're accessing it from, so register the host you'll actually use.
+3. In the app, go to **Settings** and paste your **Client ID** and **Client Secret** (stored
+   encrypted per-user).
 4. The app requests these OAuth scopes on connect:
 
 ```
@@ -125,7 +132,8 @@ ugc-image-upload
 ### Last.fm (optional)
 
 1. Create an API account at [last.fm/api](https://www.last.fm/api/account/create).
-2. Put the key in `.env` as `LASTFM_API_KEY`, and enter your Last.fm username in Settings.
+2. In the app, go to **Settings** and enter your **API key** and **Last.fm username** (stored
+   encrypted per-user).
 
 ### LLM provider (pick one)
 
