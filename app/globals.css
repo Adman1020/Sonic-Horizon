@@ -1,0 +1,60 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+
+  /* ── Sonic Horizon — Outrun / Synthwave Palette ── */
+  --color-analog-bg:           #07071A;   /* deep space navy */
+  --color-analog-card:         #0E0E2A;   /* dark purple surface */
+  --color-analog-border:       #27245A;   /* mid-purple border */
+  --color-analog-accent:       #FF006E;   /* neon magenta (primary) */
+  --color-analog-accent-hover: #FF3D8A;   /* lighter pink */
+  --color-analog-text:         #EDE8FF;   /* soft lavender white */
+  --color-analog-text-muted:   #6B5E9B;   /* muted purple */
+
+  /* Synthwave secondaries */
+  --color-sh-cyan:   #00E5FF;
+  --color-sh-purple: #9945FF;
+  --color-sh-pink:   #FF006E;
+}
+
+:root {
+  --background: #07071A;
+  --foreground: #EDE8FF;
+}
+
+/* Subtle outrun grid overlay on the main body */
+body {
+  color: var(--foreground);
+  background:
+    linear-gradient(rgba(255, 0, 110, 0.025) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(153, 69, 255, 0.02) 1px, transparent 1px),
+    #07071A;
+  background-size: 60px 60px, 60px 60px, auto;
+  font-family: Arial, Helvetica, sans-serif;
+  min-height: 100vh;
+}
+
+/* Accent glow utilities — applied via className */
+.neon-pink-glow  { box-shadow: 0 0 20px rgba(255, 0, 110, 0.4), 0 0 60px rgba(255, 0, 110, 0.1); }
+.neon-cyan-glow  { box-shadow: 0 0 20px rgba(0, 229, 255, 0.4); }
+.neon-card-hover:hover { box-shadow: 0 0 0 1px rgba(255, 0, 110, 0.3), 0 4px 24px rgba(255, 0, 110, 0.08); }
+.neon-card-active { box-shadow: 0 0 0 1px rgba(255, 0, 110, 0.5), 0 4px 24px rgba(255, 0, 110, 0.15); }
+
+/* Synthwave gradient text — for logo / hero text */
+.gradient-text {
+  background: linear-gradient(90deg, #FF006E 0%, #9945FF 50%, #00E5FF 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* Gradient horizontal bar — used as top-edge accent on cards */
+.gradient-bar {
+  background: linear-gradient(90deg, #FF006E, #9945FF, #00E5FF);
+}
+
+@layer utilities {
+  .text-balance { text-wrap: balance; }
+}

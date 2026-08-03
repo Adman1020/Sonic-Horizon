@@ -1,0 +1,26 @@
+services:
+  sonic-horizon:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: sonic-horizon
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./config:/config
+      - ./uploads:/data/uploads
+    environment:
+      - NODE_ENV=production
+      - DATABASE_URL=file:/config/pde.db
+      # Generate a strong random secret: openssl rand -hex 32
+      - JWT_SECRET=change-me-to-a-long-random-secret
+      # Generate a strong random secret: openssl rand -hex 32
+      - ENCRYPTION_SECRET=change-me-to-another-random-secret
+      # Register a free API key at last.fm/api/account/create
+      - LASTFM_API_KEY=
+      # Register a Spotify app at developer.spotify.com/dashboard
+      - SPOTIFY_CLIENT_ID=
+      - SPOTIFY_CLIENT_SECRET=
+      # Must match exactly what you registered in Spotify dashboard
+      - SPOTIFY_REDIRECT_URI=http://localhost:8080/api/spotify/callback
+    restart: unless-stopped
