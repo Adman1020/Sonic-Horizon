@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { getCurrentUserId } from '@/lib/auth';
+import { parseSpotifySources, serializeSpotifySources, DEFAULT_SPOTIFY_SOURCES } from '@/lib/spotifySources';
 
 export async function GET() {
   const userId = await getCurrentUserId();
@@ -18,7 +19,10 @@ export async function GET() {
     return NextResponse.json({
       username: user?.username,
       isAdmin: user?.isAdmin,
-      settings: settings ?? {
+      settings: settings ? {
+        ...settings,
+        spotifySources: parseSpotifySources(settings.spotifySources),
+      } : {
         obscurityLevel: 3,
         outputFormat: 'tracks',
         recommendationLimit: 20,
@@ -28,6 +32,7 @@ export async function GET() {
         theme: 'analog-hifi',
         lastFmUsername: null,
         spotifyAccessToken: null,
+        spotifySources: [...DEFAULT_SPOTIFY_SOURCES],
       },
       historyCount,
       knownArtistCount,
@@ -47,7 +52,7 @@ export async function PUT(req: Request) {
 
   try {
     const body = await req.json();
-    const { obscurityLevel, outputFormat, recommendationLimit, requestsPerMinute, spotifyPlaylistPublic, scheduleMode, lastFmUsername } = body;
+    const { obscurityLevel, outputFormat, recommendationLimit, requestsPerMinute, spotifyPlaylistPublic, scheduleMode, lastFmUsername, spotifySources } = body;
 
     const now = new Date();
     const settings = await prisma.settings.upsert({
@@ -60,6 +65,7 @@ export async function PUT(req: Request) {
         ...(spotifyPlaylistPublic !== undefined && { spotifyPlaylistPublic }),
         ...(scheduleMode !== undefined && { scheduleMode }),
         ...(lastFmUsername !== undefined && { lastFmUsername }),
+        ...(spotifySources !== undefined && { spotifySources: serializeSpotifySources(spotifySources) }),
         updatedAt: now,
       },
       create: {
@@ -71,6 +77,7 @@ export async function PUT(req: Request) {
         spotifyPlaylistPublic: spotifyPlaylistPublic ?? true,
         scheduleMode: scheduleMode ?? 'manual',
         lastFmUsername: lastFmUsername ?? null,
+        spotifySources: spotifySources !== undefined ? serializeSpotifySources(spotifySources) : 'all',
         createdAt: now,
         updatedAt: now,
       },

@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { SPOTIFY_SOURCES, DEFAULT_SPOTIFY_SOURCES } from '@/lib/spotifySources';
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
@@ -26,6 +27,7 @@ interface UserState {
     requestsPerMinute?: number;
     spotifyPlaylistPublic?: boolean;
     lastFmUsername: string | null;
+    spotifySources?: string[];
   };
 }
 
@@ -182,6 +184,15 @@ export default function Home() {
   const [spotifyFetching, setSpotifyFetching] = useState(false);
   const [isDragOverSpotify, setIsDragOverSpotify] = useState(false);
   const spotifyFileRef = useRef<HTMLInputElement>(null);
+  const [spotifySources, setSpotifySources] = useState<string[]>(DEFAULT_SPOTIFY_SOURCES);
+
+  // ── Imported artists list state
+  const [artists, setArtists] = useState<string[]>([]);
+  const [artistsTotal, setArtistsTotal] = useState(0);
+  const [artistsOpen, setArtistsOpen] = useState(false);
+  const [artistsLoading, setArtistsLoading] = useState(false);
+  const [artistsLoaded, setArtistsLoaded] = useState(false);
+  const [artistFilter, setArtistFilter] = useState('');
 
   // ── Upload state (separate per section)
   const [lastFmUploadStatus, setLastFmUploadStatus] = useState('');
@@ -229,6 +240,7 @@ export default function Home() {
         if (data.settings.requestsPerMinute !== undefined) setRpm(data.settings.requestsPerMinute);
         if (data.settings.spotifyPlaylistPublic !== undefined) setIsPlaylistPublic(data.settings.spotifyPlaylistPublic);
         if (data.settings.lastFmUsername) setLastFmUsername(data.settings.lastFmUsername);
+        if (data.settings.spotifySources) setSpotifySources(data.settings.spotifySources);
         setLoading(false);
       })
       .catch(() => setLoading(false));
@@ -264,11 +276,11 @@ export default function Home() {
       fetch('/api/user/settings', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ obscurityLevel: obscurity, outputFormat, recommendationLimit: quantity, requestsPerMinute: rpm, spotifyPlaylistPublic: isPlaylistPublic }),
+        body: JSON.stringify({ obscurityLevel: obscurity, outputFormat, recommendationLimit: quantity, requestsPerMinute: rpm, spotifyPlaylistPublic: isPlaylistPublic, spotifySources }),
       });
     }, 800);
     return () => clearTimeout(t);
-  }, [obscurity, outputFormat, quantity, rpm, isPlaylistPublic, user]);
+  }, [obscurity, outputFormat, quantity, rpm, isPlaylistPublic, spotifySources, user]);
 
   // Update default model when provider changes
   useEffect(() => {
@@ -352,13 +364,39 @@ export default function Home() {
   const handleSpotifyFetch = async () => {
     setSpotifyFetching(true);
     try {
-      const res = await fetch('/api/spotify/fetch', { method: 'POST' });
+      const res = await fetch('/api/spotify/fetch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sources: spotifySources }),
+      });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
       setUser(prev => prev ? { ...prev, knownArtistCount: prev.knownArtistCount + data.addedArtists } : prev);
       addLog(`Spotify: ${data.message}`, 'success');
     } catch (e: unknown) { addLog(`Spotify fetch failed: ${e instanceof Error ? e.message : 'Error'}`, 'error'); }
     setSpotifyFetching(false);
+  };
+
+  const toggleSpotifySource = (key: string) => {
+    setSpotifySources(prev => prev.includes(key) ? prev.filter(k => k !== key) : [...prev, key]);
+  };
+
+  const handleToggleArtists = async () => {
+    if (!artistsOpen && !artistsLoaded) {
+      setArtistsLoading(true);
+      try {
+        const res = await fetch('/api/artists');
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error);
+        setArtists(data.artists);
+        setArtistsTotal(data.total);
+        setArtistsLoaded(true);
+      } catch (e: unknown) {
+        addLog(`Failed to load artists: ${e instanceof Error ? e.message : 'Error'}`, 'error');
+      }
+      setArtistsLoading(false);
+    }
+    setArtistsOpen(o => !o);
   };
 
   const handleFileUpload = async (file: File, type: 'endsong' | 'lastfm_csv') => {
@@ -524,8 +562,10 @@ OUTPUT JSON SCHEMA:
           </div>
           <div className="flex items-center gap-4">
             <div className="hidden sm:flex items-center gap-1.5 text-xs">
-              <span className="w-1.5 h-1.5 rounded-full" style={{ background: hasHistory ? '#00E5FF' : '#27245A', boxShadow: hasHistory ? '0 0 6px #00E5FF' : 'none' }} />
-              <span className="text-analog-text-muted">{user?.knownArtistCount ?? 0} artists</span>
+              <button onClick={handleToggleArtists} className="flex items-center gap-1.5 hover:text-white transition-colors cursor-pointer">
+                <span className="w-1.5 h-1.5 rounded-full" style={{ background: hasHistory ? '#00E5FF' : '#27245A', boxShadow: hasHistory ? '0 0 6px #00E5FF' : 'none' }} />
+                <span className="text-analog-text-muted">{user?.knownArtistCount ?? 0} artists{artistsOpen ? ' ▲' : ' ▼'}</span>
+              </button>
             </div>
             <span className="text-xs text-analog-text-muted">{user?.username}</span>
             <button onClick={handleLogout} className="text-xs text-analog-text-muted hover:text-red-400 transition-colors">Logout</button>
@@ -534,6 +574,38 @@ OUTPUT JSON SCHEMA:
       </header>
 
       <main className="max-w-3xl mx-auto px-6 py-8 space-y-4">
+
+        {/* ═══ Imported Artists list ══════════════════════════════════════════ */}
+        {artistsOpen && (
+          <div className="bg-analog-card border border-analog-border rounded-xl overflow-hidden" style={{ boxShadow: '0 4px 24px rgba(0,0,0,0.4)' }}>
+            <div className="px-6 py-3 flex flex-wrap items-center gap-3 border-b border-analog-border">
+              <span className="font-semibold text-white">Imported Artists</span>
+              <span className="text-xs text-analog-text-muted font-mono">
+                {artistsLoading ? 'Loading…' : `${artistsTotal} artists`}
+              </span>
+              <input type="text" value={artistFilter} onChange={e => setArtistFilter(e.target.value)}
+                placeholder="Filter…"
+                className="flex-1 min-w-[140px] bg-analog-bg border border-analog-border rounded px-3 py-1.5 text-xs text-white placeholder-analog-text-muted focus:outline-none focus:border-analog-accent transition-colors" />
+              <button onClick={() => setArtistsOpen(false)}
+                className="text-xs text-analog-text-muted hover:text-white transition-colors">Close</button>
+            </div>
+            <div className="max-h-72 overflow-y-auto divide-y divide-analog-border">
+              {(artistsLoading && artists.length === 0)
+                ? <div className="px-6 py-6 text-center text-xs text-analog-text-muted">Loading…</div>
+                : artists
+                    .filter(name => name.toLowerCase().includes(artistFilter.trim().toLowerCase()))
+                    .map(name => (
+                      <div key={name} className="px-6 py-2.5 text-sm text-analog-text hover:bg-analog-bg/40 transition-colors flex items-center gap-3">
+                        <span className="w-1 h-1 rounded-full shrink-0" style={{ background: '#FF006E', boxShadow: '0 0 4px #FF006E' }} />
+                        {name}
+                      </div>
+                    ))}
+              {!artistsLoading && artists.length === 0 && (
+                <div className="px-6 py-6 text-center text-xs text-analog-text-muted">No artists imported yet</div>
+              )}
+            </div>
+          </div>
+        )}
 
         {/* ═══ STEP 1: Last.fm ══════════════════════════════════════════════════ */}
         <Section
@@ -781,6 +853,36 @@ OUTPUT JSON SCHEMA:
                   </button>
                 </>
               )}
+            </div>
+
+            {/* Which Spotify data sources to import */}
+            <div className="pt-2">
+              <label className="block text-xs text-analog-text-muted mb-2">
+                Spotify data sources to import
+                <span className="ml-1 text-sh-cyan font-normal">({spotifySources.length}/{SPOTIFY_SOURCES.length} on)</span>
+              </label>
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                {SPOTIFY_SOURCES.map(s => {
+                  const on = spotifySources.includes(s.key);
+                  return (
+                    <button key={s.key} onClick={() => toggleSpotifySource(s.key)}
+                      className={`px-3 py-2 text-xs rounded-lg border transition-all text-left flex items-center gap-2 cursor-pointer ${
+                        on ? 'border-analog-accent text-white' : 'border-analog-border text-analog-text-muted hover:text-white'
+                      }`}
+                      style={on ? { background: 'rgba(255,0,110,0.1)', boxShadow: '0 0 0 1px rgba(255,0,110,0.3)' } : {}}>
+                      <span className={`w-3 h-3 rounded-sm border flex items-center justify-center text-[9px] shrink-0 ${
+                        on ? 'bg-analog-accent border-analog-accent text-white' : 'border-analog-border'
+                      }`}>
+                        {on ? '✓' : ''}
+                      </span>
+                      {s.label}
+                    </button>
+                  );
+                })}
+              </div>
+              <p className="text-xs text-analog-text-muted mt-1.5">
+                All on by default. Unticked sources are skipped on the next refresh.
+              </p>
             </div>
           </div>
 

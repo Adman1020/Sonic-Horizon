@@ -80,6 +80,7 @@ function initializeSchema(db: Database): void {
       "requestsPerMinute" INTEGER NOT NULL DEFAULT 0,
       "spotifyPlaylistPublic" BOOLEAN NOT NULL DEFAULT 1,
       "scheduleMode" TEXT NOT NULL DEFAULT 'manual',
+      "spotifySources" TEXT NOT NULL DEFAULT 'all',
       "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
       "updatedAt" DATETIME NOT NULL,
       CONSTRAINT "Settings_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User" ("id") ON DELETE CASCADE ON UPDATE CASCADE
@@ -93,6 +94,9 @@ function initializeSchema(db: Database): void {
   } catch { /* Column already exists */ }
   try {
     db.exec(`ALTER TABLE "Settings" ADD COLUMN "spotifyPlaylistPublic" BOOLEAN NOT NULL DEFAULT 1;`);
+  } catch { /* Column already exists */ }
+  try {
+    db.exec(`ALTER TABLE "Settings" ADD COLUMN "spotifySources" TEXT NOT NULL DEFAULT 'all';`);
   } catch { /* Column already exists */ }
   db.exec(`COMMIT;`);
 }
