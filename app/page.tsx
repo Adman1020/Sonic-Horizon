@@ -441,6 +441,16 @@ export default function Home() {
     formData.append('type', type);
     try {
       const res = await fetch('/api/upload', { method: 'POST', body: formData });
+      const contentType = res.headers.get('content-type') ?? '';
+      if (!contentType.includes('application/json')) {
+        // Non-JSON (e.g. an HTML 413 page from a reverse proxy that caps
+        // request body size) — decode a snippet so the user gets a useful hint.
+        const body = await res.text();
+        const snippet = body.replace(/\s+/g, ' ').slice(0, 120);
+        throw new Error(res.status === 413
+          ? 'Request too large — your reverse proxy caps upload size. Increase client_max_body_size (e.g. 500m) in nginx.'
+          : `Unexpected response (HTTP ${res.status}): ${snippet}`);
+      }
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
       setStatus(`✓ ${data.message}`);
