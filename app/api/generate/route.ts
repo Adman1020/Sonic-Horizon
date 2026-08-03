@@ -7,7 +7,13 @@ import { getValidSpotifyAccessToken, searchSpotifyTrack, searchSpotifyAlbumTrack
 import { rankSeeds, normalizeArtistName, isTasteFocus, TASTE_FOCUS_DEFAULT, isPoolEligible, isBaselineEligible, type TasteFocus } from '@/lib/artistScore';
 
 const SEED_LIMIT = 50;
-const EXCLUSION_LIST_LIMIT = 500;
+// Send the FULL exclusion baseline to the model. A fixed small cap (500) hid
+// thousands of known artists from the prompt, so the model naturally suggested
+// artists the user already listens to — and the code-side filter then deleted
+// them, returning a fraction of the requested quantity. Artist names are cheap
+// tokens; Gemini/OpenAI/Anthropic all have 200K+ contexts, so send everything
+// (capped defensively for small local models).
+const EXCLUSION_LIST_LIMIT = 10000;
 
 export async function POST(req: Request) {
   const userId = await getCurrentUserId();
@@ -110,6 +116,8 @@ OUTPUT SCHEMA (return exactly this JSON, no other text):
     const promptQuantity = Math.max(quantity + 10, Math.ceil(quantity * 1.5));
     const userPrompt = `Generate ${promptQuantity} ${format === 'tracks' ? 'track' : 'album'} recommendations. Return ONLY the JSON object, no other text.`;
 
+    console.log(`[generate] request qty=${quantity} promptQty=${promptQuantity} format=${format} obscurity=${obscurity} provider=${provider} model=${model ?? 'default'} baseline=${baselineArtists.length} pool=${poolArtists.length} focus=${focus} exclShown=${exclusionSample.length}/${excludedCount}`);
+
     const result = await generateDiscoveryPlaylist({
       provider: provider as ProviderType,
       apiKey,
@@ -120,8 +128,11 @@ OUTPUT SCHEMA (return exactly this JSON, no other text):
     });
 
     if (!result?.recommendations?.length) {
+      console.warn(`[generate] LLM returned no recommendations (${provider}/${model})`);
       return NextResponse.json({ error: 'LLM returned no recommendations' }, { status: 500 });
     }
+
+    console.log(`[generate] LLM returned ${result.recommendations.length} raw recs`);
 
     // Code-side hard exclusion: drop anything that maps to a known artist,
     // regardless of what the prompt said.
@@ -135,11 +146,15 @@ OUTPUT SCHEMA (return exactly this JSON, no other text):
       return NextResponse.json({ error: 'The model only suggested artists already in your listening history. Try again or raise the quantity.' }, { status: 500 });
     }
 
+    console.log(`[generate] after hard exclusion (${excludedSet.size} baseline artists): ${cleaned.length}/${result.recommendations.length} remain`);
+
     // Pre-verify candidates against Spotify if token is available
     const spotifyToken = await getValidSpotifyAccessToken(userId);
     let finalRecommendations = cleaned;
+    let spotifyDropped = 0;
 
     if (spotifyToken) {
+      console.log(`[generate] Spotify verification ON — checking up to ${quantity}`);
       const verified = [];
       for (const rec of cleaned) {
         if (verified.length >= quantity) break;
@@ -151,23 +166,32 @@ OUTPUT SCHEMA (return exactly this JSON, no other text):
           const albumResult = await searchSpotifyAlbumTracks(spotifyToken, artist, title);
           if (albumResult.uris.length > 0) {
             verified.push({ ...rec, spotifyUris: albumResult.uris, spotifyAlbumId: albumResult.albumId });
+          } else {
+            spotifyDropped++;
+            console.warn(`[generate] Spotify dropped album: "${artist}" - "${title}"`);
           }
         } else {
           const track = await searchSpotifyTrack(spotifyToken, artist, title);
           if (track?.uri) {
             verified.push({ ...rec, spotifyUri: track.uri });
+          } else {
+            spotifyDropped++;
+            console.warn(`[generate] Spotify dropped track: "${artist}" - "${title}"`);
           }
         }
       }
+      console.log(`[generate] Spotify verified ${verified.length}, dropped ${spotifyDropped}`);
       if (verified.length > 0) {
         finalRecommendations = verified;
       } else {
         finalRecommendations = cleaned.slice(0, quantity);
       }
     } else {
+      console.log('[generate] No Spotify token — returning unverified recommendations');
       finalRecommendations = cleaned.slice(0, quantity);
     }
 
+    console.log(`[generate] FINAL: ${finalRecommendations.length} recs returned (requested ${quantity})`);
     return NextResponse.json({ recommendations: finalRecommendations });
   } catch (error: unknown) {
     console.error('Generation error:', error);
