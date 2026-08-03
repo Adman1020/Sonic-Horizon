@@ -1429,7 +1429,18 @@ OUTPUT JSON SCHEMA:
       </main>
 
       <footer className="max-w-3xl mx-auto px-6 pb-10 pt-6 border-t border-analog-border text-center text-analog-text-muted text-xs">
-        <span className="gradient-text font-semibold">Sonic Horizon</span> · Self-hosted · All data stays local
+        <p><span className="gradient-text font-semibold">Sonic Horizon</span> · Self-hosted · All data stays local</p>
+        <p className="mt-2 flex items-center justify-center gap-3">
+          <a href="https://github.com/Adman1020/Sonic-Horizon" target="_blank" rel="noopener noreferrer"
+            className="hover:text-white transition-colors">
+            Source code ↗
+          </a>
+          <span className="opacity-50">·</span>
+          <a href="https://github.com/Adman1020/Sonic-Horizon/issues" target="_blank" rel="noopener noreferrer"
+            className="hover:text-white transition-colors">
+            Report an issue ↗
+          </a>
+        </p>
       </footer>
     </div>
   );
