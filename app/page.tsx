@@ -402,7 +402,7 @@ export default function Home() {
   const handleClearSource = async (source: 'spotify' | 'lastfm') => {
     const label = source === 'spotify' ? 'Spotify' : 'Last.fm';
     if (!window.confirm(
-      `Clear all ${label} data?\n\nThis removes every imported ${label} play and artist, resets your ${label} profile to empty, and disconnects ${label}. This cannot be undone.`
+      `Clear all ${label} artists?\n\nThis removes every imported ${label} play and artist. Your ${label} connection stays — you can re-fetch to import again. This cannot be undone.`
     )) return;
     try {
       const res = await fetch('/api/data/reset', {
@@ -415,9 +415,6 @@ export default function Home() {
       setUser(prev => prev ? {
         ...prev,
         knownArtistCount: data.remainingArtists,
-        spotifyConnected: source === 'spotify' ? false : prev.spotifyConnected,
-        lastFmConnected: source === 'lastfm' ? false : prev.lastFmConnected,
-        settings: source === 'lastfm' ? { ...prev.settings, lastFmUsername: null } : prev.settings,
       } : prev);
       setArtistsLoaded(false);
       setArtists([]);
@@ -647,11 +644,43 @@ OUTPUT JSON SCHEMA:
               : <Badge color="dim">Not connected</Badge>
           }
         >
-          {/* ── Option A: Connect via API ── */}
+          {/* ── Option A: Upload a file ── */}
+          <div className="space-y-2">
+            <div className="flex items-center gap-2 mb-1">
+              <span className="text-xs font-bold px-2 py-0.5 rounded" style={{ background: 'rgba(0,229,255,0.1)', color: '#00E5FF' }}>Option A</span>
+              <SectionLabel text="Import from a CSV export — no account or API key needed" />
+            </div>
+            <DropZone
+              active={isDragOverLastfm}
+              onDragOver={() => setIsDragOverLastfm(true)}
+              onDragLeave={() => setIsDragOverLastfm(false)}
+              onDrop={f => { setIsDragOverLastfm(false); handleFileUpload(f, 'lastfm_csv'); }}
+              onClick={() => lastfmFileRef.current?.click()}
+            >
+              <p className="text-xs text-analog-text-muted text-center">
+                Drop or click to upload your <strong className="text-analog-text">Last.fm CSV file</strong>
+              </p>
+              <input ref={lastfmFileRef} type="file" accept=".csv" className="hidden"
+                onChange={e => { const f = e.target.files?.[0]; if (f) handleFileUpload(f, 'lastfm_csv'); }} />
+            </DropZone>
+            <p className="text-xs text-analog-text-muted mt-1.5">
+              💡 Export your scrobbles free at <ExtLink href="https://lastfm.ghan.nl/export/">lastfm.ghan.nl/export ↗</ExtLink> — no login needed, just your username.
+            </p>
+            <StatusMsg text={lastFmUploadStatus} />
+          </div>
+
+          {/* Divider */}
+          <div className="relative flex items-center gap-3">
+            <div className="flex-1 border-t border-analog-border" />
+            <span className="text-xs text-analog-text-muted font-semibold shrink-0">OR</span>
+            <div className="flex-1 border-t border-analog-border" />
+          </div>
+
+          {/* ── Option B: Connect & pull from API ── */}
           <div className="space-y-3">
             <div className="flex items-center gap-2 mb-1">
-              <span className="text-xs font-bold px-2 py-0.5 rounded" style={{ background: 'rgba(255,0,110,0.15)', color: '#FF006E' }}>Option A</span>
-              <SectionLabel text="Connect live to your Last.fm account" />
+              <span className="text-xs font-bold px-2 py-0.5 rounded" style={{ background: 'rgba(255,0,110,0.15)', color: '#FF006E' }}>Option B</span>
+              <SectionLabel text="Connect to your Last.fm account & fetch your top artists" />
             </div>
             <InstructionCard color="red" steps={[
               <>Open the <ExtLink href="https://www.last.fm/api/account/create">Last.fm API Account Creation page ↗</ExtLink></>,
@@ -678,51 +707,19 @@ OUTPUT JSON SCHEMA:
             </div>
             <StatusMsg text={lastFmStatus} />
 
-            {/* Danger zone */}
+            {/* Clear artists */}
             <div className="flex items-center justify-between rounded-lg px-4 py-3 border" style={{ borderColor: 'rgba(255,61,61,0.3)', background: 'rgba(255,61,61,0.05)' }}>
               <span className="text-xs text-analog-text-muted">
-                Want to start over with a different account? <strong className="text-red-400">Clears all Last.fm data &amp; disconnects.</strong>
+                <strong className="text-red-400">Clear all imported Last.fm artists</strong> (API + file uploads). Your connection stays — just re-fetch to import again.
               </span>
               <button onClick={() => handleClearSource('lastfm')}
                 className="px-3 py-1.5 text-xs font-semibold rounded border transition-colors whitespace-nowrap ml-3"
                 style={{ borderColor: '#FF3D3D', color: '#FF3D3D' }}
                 onMouseEnter={e => (e.currentTarget.style.background = 'rgba(255,61,61,0.15)')}
                 onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}>
-                Clear Last.fm data
+                Clear Last.fm artists
               </button>
             </div>
-          </div>
-
-          {/* Divider */}
-          <div className="relative flex items-center gap-3">
-            <div className="flex-1 border-t border-analog-border" />
-            <span className="text-xs text-analog-text-muted font-semibold shrink-0">OR</span>
-            <div className="flex-1 border-t border-analog-border" />
-          </div>
-
-          {/* ── Option B: Upload a file ── */}
-          <div className="space-y-2">
-            <div className="flex items-center gap-2 mb-1">
-              <span className="text-xs font-bold px-2 py-0.5 rounded" style={{ background: 'rgba(0,229,255,0.1)', color: '#00E5FF' }}>Option B</span>
-              <SectionLabel text="Import from a CSV export — no API key needed" />
-            </div>
-            <DropZone
-              active={isDragOverLastfm}
-              onDragOver={() => setIsDragOverLastfm(true)}
-              onDragLeave={() => setIsDragOverLastfm(false)}
-              onDrop={f => { setIsDragOverLastfm(false); handleFileUpload(f, 'lastfm_csv'); }}
-              onClick={() => lastfmFileRef.current?.click()}
-            >
-              <p className="text-xs text-analog-text-muted text-center">
-                Drop or click to upload your <strong className="text-analog-text">Last.fm CSV file</strong>
-              </p>
-              <input ref={lastfmFileRef} type="file" accept=".csv" className="hidden"
-                onChange={e => { const f = e.target.files?.[0]; if (f) handleFileUpload(f, 'lastfm_csv'); }} />
-            </DropZone>
-            <p className="text-xs text-analog-text-muted mt-1.5">
-              💡 Export your scrobbles free at <ExtLink href="https://lastfm.ghan.nl/export/">lastfm.ghan.nl/export ↗</ExtLink> — no login needed, just your username.
-            </p>
-            <StatusMsg text={lastFmUploadStatus} />
           </div>
         </Section>
 
@@ -738,11 +735,43 @@ OUTPUT JSON SCHEMA:
               : <Badge color="dim">Not connected</Badge>
           }
         >
-          {/* ── Option A: OAuth ── */}
+          {/* ── Option A: Upload a file ── */}
+          <div className="space-y-2">
+            <div className="flex items-center gap-2 mb-1">
+              <span className="text-xs font-bold px-2 py-0.5 rounded" style={{ background: 'rgba(0,229,255,0.1)', color: '#00E5FF' }}>Option A</span>
+              <SectionLabel text="Import lifetime history from a Spotify data export — no app setup needed" />
+            </div>
+            <DropZone
+              active={isDragOverSpotify}
+              onDragOver={() => setIsDragOverSpotify(true)}
+              onDragLeave={() => setIsDragOverSpotify(false)}
+              onDrop={f => { setIsDragOverSpotify(false); handleFileUpload(f, 'endsong'); }}
+              onClick={() => spotifyFileRef.current?.click()}
+            >
+              <p className="text-xs text-analog-text-muted text-center">
+                Drop or click to upload <strong className="text-analog-text">endsong_*.json</strong> from your Spotify data export
+              </p>
+              <input ref={spotifyFileRef} type="file" accept=".json" className="hidden"
+                onChange={e => { const f = e.target.files?.[0]; if (f) handleFileUpload(f, 'endsong'); }} />
+            </DropZone>
+            <p className="text-xs text-analog-text-muted mt-1.5">
+              💡 Request your export at <ExtLink href="https://www.spotify.com/account/privacy">spotify.com/account/privacy ↗</ExtLink> → Extended Streaming History (takes ~30 days via email).
+            </p>
+            <StatusMsg text={spotifyUploadStatus} />
+          </div>
+
+          {/* Divider */}
+          <div className="relative flex items-center gap-3">
+            <div className="flex-1 border-t border-analog-border" />
+            <span className="text-xs text-analog-text-muted font-semibold shrink-0">OR</span>
+            <div className="flex-1 border-t border-analog-border" />
+          </div>
+
+          {/* ── Option B: Connect & pull from API ── */}
           <div className="space-y-3">
             <div className="flex items-center gap-2 mb-1">
-              <span className="text-xs font-bold px-2 py-0.5 rounded" style={{ background: 'rgba(255,0,110,0.15)', color: '#FF006E' }}>Option A</span>
-              <SectionLabel text="Connect your Spotify account via OAuth" />
+              <span className="text-xs font-bold px-2 py-0.5 rounded" style={{ background: 'rgba(255,0,110,0.15)', color: '#FF006E' }}>Option B</span>
+              <SectionLabel text="Connect your Spotify account via OAuth & refresh artists" />
             </div>
             <InstructionCard color="green" steps={[
               <>Open the <ExtLink href="https://developer.spotify.com/dashboard">Spotify Developer Dashboard ↗</ExtLink> and log in</>,
@@ -765,7 +794,7 @@ OUTPUT JSON SCHEMA:
               <p style={{ color: '#00E5FF' }} className="font-semibold mb-1">ℹ Note on Live API vs Full Export:</p>
               <p className="text-analog-text-muted">
                 Spotify&apos;s live API limits access to your <strong>recent tracks, liked songs, and top ~150 artists</strong>.
-                If you want your <em>complete, 100% lifetime listening history</em> (all-time scrobbles), use <strong className="text-white">Option B</strong> below to upload your Spotify data export instead.
+                If you want your <em>complete, 100% lifetime listening history</em> (all-time scrobbles), use <strong className="text-white">Option A</strong> above to upload your Spotify data export instead.
               </p>
             </div>
 
@@ -927,51 +956,19 @@ OUTPUT JSON SCHEMA:
               </p>
             </div>
 
-            {/* Danger zone */}
+            {/* Clear artists */}
             <div className="flex items-center justify-between rounded-lg px-4 py-3 border" style={{ borderColor: 'rgba(255,61,61,0.3)', background: 'rgba(255,61,61,0.05)' }}>
               <span className="text-xs text-analog-text-muted">
-                Want to start over with a different account? <strong className="text-red-400">Clears all Spotify data &amp; disconnects.</strong>
+                <strong className="text-red-400">Clear all imported Spotify artists</strong> (API + file uploads). Your connection stays — just re-fetch to import again.
               </span>
               <button onClick={() => handleClearSource('spotify')}
                 className="px-3 py-1.5 text-xs font-semibold rounded border transition-colors whitespace-nowrap ml-3"
                 style={{ borderColor: '#FF3D3D', color: '#FF3D3D' }}
                 onMouseEnter={e => (e.currentTarget.style.background = 'rgba(255,61,61,0.15)')}
                 onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}>
-                Clear Spotify data
+                Clear Spotify artists
               </button>
             </div>
-          </div>
-
-          {/* Divider */}
-          <div className="relative flex items-center gap-3">
-            <div className="flex-1 border-t border-analog-border" />
-            <span className="text-xs text-analog-text-muted font-semibold shrink-0">OR</span>
-            <div className="flex-1 border-t border-analog-border" />
-          </div>
-
-          {/* ── Option B: File Upload ── */}
-          <div className="space-y-2">
-            <div className="flex items-center gap-2 mb-1">
-              <span className="text-xs font-bold px-2 py-0.5 rounded" style={{ background: 'rgba(0,229,255,0.1)', color: '#00E5FF' }}>Option B</span>
-              <SectionLabel text="Import lifetime history from Spotify data export — no app setup needed" />
-            </div>
-            <DropZone
-              active={isDragOverSpotify}
-              onDragOver={() => setIsDragOverSpotify(true)}
-              onDragLeave={() => setIsDragOverSpotify(false)}
-              onDrop={f => { setIsDragOverSpotify(false); handleFileUpload(f, 'endsong'); }}
-              onClick={() => spotifyFileRef.current?.click()}
-            >
-              <p className="text-xs text-analog-text-muted text-center">
-                Drop or click to upload <strong className="text-analog-text">endsong_*.json</strong> from your Spotify data export
-              </p>
-              <input ref={spotifyFileRef} type="file" accept=".json" className="hidden"
-                onChange={e => { const f = e.target.files?.[0]; if (f) handleFileUpload(f, 'endsong'); }} />
-            </DropZone>
-            <p className="text-xs text-analog-text-muted mt-1.5">
-              💡 Request your export at <ExtLink href="https://www.spotify.com/account/privacy">spotify.com/account/privacy ↗</ExtLink> → Extended Streaming History (takes ~30 days via email).
-            </p>
-            <StatusMsg text={spotifyUploadStatus} />
           </div>
         </Section>
 

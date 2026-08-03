@@ -30,27 +30,14 @@ export async function POST(req: Request) {
       });
     }
 
-    // 3. Disconnect the source
-    if (source === 'spotify') {
-      await prisma.settings.updateMany({
-        where: { userId },
-        data: { spotifyAccessToken: null, spotifyRefreshToken: null, updatedAt: now },
-      });
-    } else {
-      await prisma.settings.updateMany({
-        where: { userId },
-        data: { lastFmUsername: null, updatedAt: now },
-      });
-    }
-
     return NextResponse.json({
       success: true,
       source,
       deletedPlays: deletedHistory.count,
       remainingArtists: remaining.length,
       message: source === 'spotify'
-        ? `Cleared Spotify data (${deletedHistory.count} plays removed, Spotify disconnected)`
-        : `Cleared Last.fm data (${deletedHistory.count} plays removed, Last.fm disconnected)`,
+        ? `Cleared Spotify artists (${deletedHistory.count} plays removed)`
+        : `Cleared Last.fm artists (${deletedHistory.count} plays removed)`,
     });
   } catch (error) {
     console.error('Reset error:', error);
