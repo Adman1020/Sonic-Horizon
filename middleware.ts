@@ -3,8 +3,12 @@ import type { NextRequest } from 'next/server';
 import { jwtVerify } from 'jose';
 
 const secretKey = process.env.JWT_SECRET;
-if (!secretKey) throw new Error('JWT_SECRET environment variable is required.');
-const key = new TextEncoder().encode(secretKey);
+const key = secretKey ? new TextEncoder().encode(secretKey) : null;
+
+function getJwtKey(): Uint8Array {
+  if (!key) throw new Error('JWT_SECRET environment variable is required.');
+  return key;
+}
 
 export async function middleware(request: NextRequest) {
   const token = request.cookies.get('sonic_horizon_token')?.value;
@@ -24,7 +28,7 @@ export async function middleware(request: NextRequest) {
   }
 
   try {
-    const { payload } = await jwtVerify(token, key);
+    const { payload } = await jwtVerify(token, getJwtKey());
     const isAdmin = Boolean(payload.isAdmin);
 
     if (isAdmin && pathname === '/') {

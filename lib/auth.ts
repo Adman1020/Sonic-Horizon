@@ -3,8 +3,12 @@ import bcrypt from 'bcrypt';
 import { cookies } from 'next/headers';
 
 const secretKey = process.env.JWT_SECRET;
-if (!secretKey) throw new Error('JWT_SECRET environment variable is required.');
-const key = new TextEncoder().encode(secretKey);
+const key = secretKey ? new TextEncoder().encode(secretKey) : null;
+
+function getJwtKey(): Uint8Array {
+  if (!key) throw new Error('JWT_SECRET environment variable is required.');
+  return key;
+}
 
 export async function hashPassword(password: string): Promise<string> {
   const salt = await bcrypt.genSalt(10);
@@ -20,12 +24,12 @@ export async function signToken(payload: Record<string, unknown>) {
     .setProtectedHeader({ alg: 'HS256' })
     .setIssuedAt()
     .setExpirationTime('7d')
-    .sign(key);
+    .sign(getJwtKey());
 }
 
 export async function verifyToken(token: string) {
   try {
-    const { payload } = await jwtVerify(token, key);
+    const { payload } = await jwtVerify(token, getJwtKey());
     return payload;
   } catch {
     return null;
@@ -33,11 +37,12 @@ export async function verifyToken(token: string) {
 }
 
 export async function getCurrentUserId(): Promise<string | null> {
+  const jwtKey = getJwtKey();
   try {
     const cookieStore = await cookies();
     const token = cookieStore.get('sonic_horizon_token')?.value;
     if (!token) return null;
-    const { payload } = await jwtVerify(token, key);
+    const { payload } = await jwtVerify(token, jwtKey);
     return payload.userId as string;
   } catch {
     return null;
@@ -45,11 +50,12 @@ export async function getCurrentUserId(): Promise<string | null> {
 }
 
 export async function getCurrentUser(): Promise<{ userId: string; username: string; isAdmin: boolean } | null> {
+  const jwtKey = getJwtKey();
   try {
     const cookieStore = await cookies();
     const token = cookieStore.get('sonic_horizon_token')?.value;
     if (!token) return null;
-    const { payload } = await jwtVerify(token, key);
+    const { payload } = await jwtVerify(token, jwtKey);
     return {
       userId: payload.userId as string,
       username: payload.username as string,
