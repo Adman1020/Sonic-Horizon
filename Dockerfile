@@ -59,8 +59,6 @@ COPY --from=builder --chown=nextjs:nodejs /app/node_modules/file-uri-to-path ./n
 COPY --chown=nextjs:nodejs entrypoint.sh ./entrypoint.sh
 RUN chmod +x ./entrypoint.sh
 
-USER nextjs
-
 EXPOSE 8080
 
 ENTRYPOINT ["./entrypoint.sh"]
