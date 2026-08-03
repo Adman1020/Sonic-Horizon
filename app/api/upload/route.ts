@@ -1,10 +1,25 @@
 import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { getCurrentUserId } from '@/lib/auth';
-import { parseEndsongJson } from '@/lib/spotify';
+import { parseEndsongJson, type ImportRecord } from '@/lib/spotify';
 import { parseLastFmCsv } from '@/lib/lastfm';
+import { recomputeHistoryForArtists } from '@/lib/artistScoreDb';
 import path from 'path';
 import fs from 'fs';
+
+const MAX_FILES = 100;
+const MAX_FILE_BYTES = 250 * 1024 * 1024;
+const INSERT_CHUNK = 500;
+
+function parseContent(content: string, fileName: string, fileType: string): ImportRecord[] {
+  if (fileType === 'endsong' || fileName.endsWith('.json')) {
+    return parseEndsongJson(content);
+  }
+  if (fileType === 'lastfm_csv' || fileName.endsWith('.csv')) {
+    return parseLastFmCsv(content);
+  }
+  throw new Error(`Unsupported file type for "${fileName}". Use endsong_*.json or a Last.fm CSV.`);
+}
 
 export async function POST(req: Request) {
   const userId = await getCurrentUserId();
@@ -12,76 +27,107 @@ export async function POST(req: Request) {
 
   try {
     const formData = await req.formData();
-    const file = formData.get('file') as File;
-    const fileType = formData.get('type') as string; // 'endsong' or 'lastfm_csv'
+    const entries = formData.getAll('files') as File[];
+    const single = formData.get('file');
+    const files = entries.length > 0 ? entries : (single ? [single as File] : []);
+    const fileType = (formData.get('type') as string) || '';
 
-    if (!file) return NextResponse.json({ error: 'No file provided' }, { status: 400 });
+    if (files.length === 0) {
+      return NextResponse.json({ error: 'No files provided.' }, { status: 400 });
+    }
+    if (files.length > MAX_FILES) {
+      return NextResponse.json({ error: `Too many files — maximum is ${MAX_FILES}. Select the endsong_*.json files in batches.` }, { status: 400 });
+    }
+    for (const f of files) {
+      if (f.size > MAX_FILE_BYTES) {
+        return NextResponse.json({ error: `"${f.name}" is ${(f.size / 1024 / 1024).toFixed(0)}MB — over the ${MAX_FILE_BYTES / 1024 / 1024}MB per-file limit.` }, { status: 400 });
+      }
+    }
 
-    const content = await file.text();
-    let records: { artistName: string; trackName: string; albumName?: string | null; playedAt: Date }[] = [];
+    const source = fileType === 'endsong' ? 'spotify' : 'lastfm';
+    const records: ImportRecord[] = [];
+    const skippedFiles: string[] = [];
+    const uploadDir = path.join('/data/uploads', userId);
+    fs.mkdirSync(uploadDir, { recursive: true });
 
-    if (fileType === 'endsong' || file.name.endsWith('.json')) {
-      records = parseEndsongJson(content);
-    } else if (fileType === 'lastfm_csv' || file.name.endsWith('.csv')) {
-      records = parseLastFmCsv(content);
-    } else {
-      return NextResponse.json({ error: 'Unsupported file type. Use endsong.json or Last.fm CSV.' }, { status: 400 });
+    for (const file of files) {
+      try {
+        const content = await file.text();
+        const parsed = parseContent(content, file.name, fileType);
+        if (parsed.length === 0) {
+          skippedFiles.push(`${file.name} (no playable records)`);
+          continue;
+        }
+        for (const rec of parsed) records.push(rec);
+        fs.writeFileSync(path.join(uploadDir, `${Date.now()}_${file.name}`), content);
+      } catch (err: unknown) {
+        skippedFiles.push(`${file.name} (${err instanceof Error ? err.message : 'failed to parse'})`);
+      }
     }
 
     if (records.length === 0) {
-      return NextResponse.json({ error: 'No valid records found in file' }, { status: 400 });
+      return NextResponse.json({
+        error: skippedFiles.length > 0
+          ? `None of the files could be imported: ${skippedFiles.join('; ')}`
+          : 'No valid records found in the selected files.',
+      }, { status: 400 });
     }
 
-    // Save to upload directory
-    const uploadDir = path.join('/data/uploads', userId);
-    fs.mkdirSync(uploadDir, { recursive: true });
-    fs.writeFileSync(path.join(uploadDir, `${Date.now()}_${file.name}`), content);
+    // Load existing plays for this user+source so re-uploads are idempotent
+    // (dedupe on playedAt + track + artist). groupBy returns distinct combos.
+    const existing = new Set<string>();
+    const existingRows = await prisma.streamingHistory.groupBy({
+      by: ['playedAt', 'artistName', 'trackName'],
+      where: { userId, source },
+    });
+    for (const r of existingRows) {
+      existing.add(`${r.playedAt.toISOString()}|${r.artistName}|${r.trackName}`);
+    }
 
-    const now = new Date();
+    const toInsert: { userId: string; source: string; artistName: string; trackName: string; albumName: string | null; playedAt: Date }[] = [];
+    const artists = new Set<string>();
+    for (const rec of records) {
+      const playedAt = rec.playedAt instanceof Date ? rec.playedAt : new Date(rec.playedAt);
+      const key = `${playedAt.toISOString()}|${rec.artistName}|${rec.trackName}`;
+      if (existing.has(key)) continue;
+      existing.add(key);
+      toInsert.push({
+        userId,
+        source,
+        artistName: rec.artistName,
+        trackName: rec.trackName,
+        albumName: rec.albumName ?? null,
+        playedAt,
+      });
+      artists.add(rec.artistName);
+    }
+
     let imported = 0;
-    const uniqueArtists = new Set<string>();
-
-    // Batch insert streaming history
-    for (const record of records) {
-      try {
-        await prisma.streamingHistory.create({
-          data: {
-            userId,
-            source: fileType === 'endsong' ? 'spotify' : 'lastfm',
-            artistName: record.artistName,
-            trackName: record.trackName,
-            albumName: record.albumName ?? null,
-            playedAt: record.playedAt instanceof Date ? record.playedAt : new Date(record.playedAt),
-          },
-        });
-        uniqueArtists.add(record.artistName.toLowerCase());
-        imported++;
-      } catch {
-        // Skip invalid records
-      }
+    for (let i = 0; i < toInsert.length; i += INSERT_CHUNK) {
+      const res = await prisma.streamingHistory.createMany({
+        data: toInsert.slice(i, i + INSERT_CHUNK),
+      });
+      imported += res.count;
     }
 
-    // Add all artists to KnownArtist exclusion set
-    let newArtists = 0;
-    for (const artistName of uniqueArtists) {
-      const originalName = records.find(r => r.artistName.toLowerCase() === artistName)?.artistName ?? artistName;
-      try {
-        await prisma.knownArtist.upsert({
-          where: { userId_artistName: { userId, artistName: originalName } },
-          update: {},
-          create: { userId, artistName: originalName, addedAt: now },
-        });
-        newArtists++;
-      } catch {
-        // Skip duplicates
-      }
+    // Re-score every artist touched by this upload from their full real history
+    // (log plays × consistency × recency). recomputeHistoryForArtists upserts
+    // knownArtist rows, creating any missing ones, so the scored seed pool stays
+    // in sync with the exclusion baseline.
+    const existingArtists = await prisma.knownArtist.findMany({ where: { userId }, select: { artistName: true } });
+    const knownArtists = new Set(existingArtists.map(a => a.artistName));
+    const newArtists = [...artists].filter(a => !knownArtists.has(a));
+    if (artists.size > 0) {
+      await recomputeHistoryForArtists(userId, [...artists]);
     }
 
+    const suffix = skippedFiles.length > 0 ? ` Skipped: ${skippedFiles.join('; ')}` : '';
     return NextResponse.json({
       success: true,
       imported,
-      uniqueArtists: newArtists,
-      message: `Imported ${imported} plays from ${newArtists} unique artists`,
+      uniqueArtists: newArtists.length,
+      files: files.length,
+      message: `Imported ${imported} plays from ${newArtists.length} new artists across ${files.length} file(s).${suffix}`,
     });
   } catch (error: unknown) {
     console.error('Upload error:', error);

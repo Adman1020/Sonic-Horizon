@@ -9,7 +9,7 @@ const globalForPrisma = globalThis as unknown as {
 }
 
 function getDbPath(): string {
-  const dbUrl = process.env.DATABASE_URL ?? 'file:/config/pde.db'
+  const dbUrl = process.env.DATABASE_URL ?? 'file:/data/db/pde.db'
   // Strip "file:" prefix to get raw filesystem path
   return dbUrl.replace(/^file:/, '')
 }
@@ -65,6 +65,10 @@ function initializeSchema(db: Database): void {
       "artistName" TEXT NOT NULL,
       "userId" TEXT NOT NULL,
       "addedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      "playCount" INTEGER NOT NULL DEFAULT 0,
+      "historyScore" REAL NOT NULL DEFAULT 0,
+      "signals" TEXT NOT NULL DEFAULT '{}',
+      "lastSeenAt" DATETIME,
       CONSTRAINT "KnownArtist_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
       UNIQUE("userId", "artistName")
     );
@@ -79,10 +83,11 @@ function initializeSchema(db: Database): void {
       "obscurityLevel" INTEGER NOT NULL DEFAULT 3,
       "outputFormat" TEXT NOT NULL DEFAULT 'tracks',
       "recommendationLimit" INTEGER NOT NULL DEFAULT 20,
-      "requestsPerMinute" INTEGER NOT NULL DEFAULT 0,
+      "requestsPerMinute" INTEGER NOT NULL DEFAULT 5,
       "spotifyPlaylistPublic" BOOLEAN NOT NULL DEFAULT 1,
       "scheduleMode" TEXT NOT NULL DEFAULT 'manual',
       "spotifySources" TEXT NOT NULL DEFAULT 'all',
+      "tasteFocus" TEXT NOT NULL DEFAULT 'automatic',
       "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
       "updatedAt" DATETIME NOT NULL,
       CONSTRAINT "Settings_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User" ("id") ON DELETE CASCADE ON UPDATE CASCADE
@@ -92,13 +97,28 @@ function initializeSchema(db: Database): void {
     BEGIN;
   `);
   try {
-    db.exec(`ALTER TABLE "Settings" ADD COLUMN "requestsPerMinute" INTEGER NOT NULL DEFAULT 0;`);
+    db.exec(`ALTER TABLE "Settings" ADD COLUMN "requestsPerMinute" INTEGER NOT NULL DEFAULT 5;`);
   } catch { /* Column already exists */ }
   try {
     db.exec(`ALTER TABLE "Settings" ADD COLUMN "spotifyPlaylistPublic" BOOLEAN NOT NULL DEFAULT 1;`);
   } catch { /* Column already exists */ }
   try {
     db.exec(`ALTER TABLE "Settings" ADD COLUMN "spotifySources" TEXT NOT NULL DEFAULT 'all';`);
+  } catch { /* Column already exists */ }
+  try {
+    db.exec(`ALTER TABLE "Settings" ADD COLUMN "tasteFocus" TEXT NOT NULL DEFAULT 'automatic';`);
+  } catch { /* Column already exists */ }
+  try {
+    db.exec(`ALTER TABLE "KnownArtist" ADD COLUMN "playCount" INTEGER NOT NULL DEFAULT 0;`);
+  } catch { /* Column already exists */ }
+  try {
+    db.exec(`ALTER TABLE "KnownArtist" ADD COLUMN "historyScore" REAL NOT NULL DEFAULT 0;`);
+  } catch { /* Column already exists */ }
+  try {
+    db.exec(`ALTER TABLE "KnownArtist" ADD COLUMN "signals" TEXT NOT NULL DEFAULT '{}';`);
+  } catch { /* Column already exists */ }
+  try {
+    db.exec(`ALTER TABLE "KnownArtist" ADD COLUMN "lastSeenAt" DATETIME;`);
   } catch { /* Column already exists */ }
   try {
     db.exec(`ALTER TABLE "User" ADD COLUMN "tokenVersion" INTEGER NOT NULL DEFAULT 0;`);
@@ -115,12 +135,12 @@ function createPrismaClient(): PrismaClient {
   
   const db = new DatabaseConstructor(dbPath, { timeout: 10000 })
   db.pragma('busy_timeout = 10000')
-  // Enable WAL mode for better concurrent read performance
-  try {
-    db.pragma('journal_mode = WAL')
-  } catch {
-    // Ignore if locked by concurrent process
-  }
+  // WAL mode caused SQLITE_IOERR_SHORT_READ on the proxy worker's connection
+  // after large multi-chunk uploads: the route handler's writes trigger
+  // auto-checkpoints that corrupt the other worker's read snapshot. The plain
+  // rollback journal coordinates readers/writers via file locks instead of
+  // shared memory, which is reliable here (single-user, per-chunk commits).
+  db.pragma('journal_mode = DELETE')
   db.pragma('foreign_keys = ON')
   
   // Initialize schema directly - no prisma CLI needed

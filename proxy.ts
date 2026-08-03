@@ -68,7 +68,8 @@ export async function proxy(request: NextRequest) {
     }
 
     return NextResponse.next();
-  } catch {
+  } catch (err) {
+    console.error('[proxy] session check failed:', err);
     return makeRedirect('/login');
   }
 }

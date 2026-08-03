@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { SPOTIFY_SOURCES, DEFAULT_SPOTIFY_SOURCES } from '@/lib/spotifySources';
+import { TASTE_FOCUS_OPTIONS, type TasteFocus } from '@/lib/artistScore';
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
@@ -10,6 +11,9 @@ interface Recommendation {
   title: string;
   reasoning: string;
   genre_tags: string[];
+  spotifyUri?: string;
+  spotifyUris?: string[];
+  spotifyAlbumId?: string;
 }
 
 interface UserState {
@@ -28,6 +32,7 @@ interface UserState {
     spotifyPlaylistPublic?: boolean;
     lastFmUsername: string | null;
     spotifySources?: string[];
+    tasteFocus?: TasteFocus;
   };
 }
 
@@ -185,6 +190,7 @@ export default function Home() {
   const [isDragOverSpotify, setIsDragOverSpotify] = useState(false);
   const spotifyFileRef = useRef<HTMLInputElement>(null);
   const [spotifySources, setSpotifySources] = useState<string[]>(DEFAULT_SPOTIFY_SOURCES);
+  const [showAdvancedSources, setShowAdvancedSources] = useState(false);
 
   // ── Imported artists list state
   const [artists, setArtists] = useState<string[]>([]);
@@ -204,13 +210,14 @@ export default function Home() {
   const [apiKeyInput, setApiKeyInput] = useState('');
   const [keySaving, setKeySaving] = useState(false);
   const [keyStatus, setKeyStatus] = useState('');
-  const [rpm, setRpm] = useState(0); // 0 = unlimited
+  const [rpm, setRpm] = useState(5); // 0 = unlimited; 5 is a safe default (see note below)
 
   // ── Tuning state
   const [obscurity, setObscurity] = useState(3);
   const [outputFormat, setOutputFormat] = useState('tracks');
   const [quantity, setQuantity] = useState(20);
   const [isPlaylistPublic, setIsPlaylistPublic] = useState(true);
+  const [tasteFocus, setTasteFocus] = useState<TasteFocus>('automatic');
 
   // ── Generation state
   const [generating, setGenerating] = useState(false);
@@ -241,6 +248,7 @@ export default function Home() {
         if (data.settings.spotifyPlaylistPublic !== undefined) setIsPlaylistPublic(data.settings.spotifyPlaylistPublic);
         if (data.settings.lastFmUsername) setLastFmUsername(data.settings.lastFmUsername);
         if (data.settings.spotifySources) setSpotifySources(data.settings.spotifySources);
+        if (data.settings.tasteFocus) setTasteFocus(data.settings.tasteFocus);
         setLoading(false);
       })
       .catch(() => setLoading(false));
@@ -276,11 +284,11 @@ export default function Home() {
       fetch('/api/user/settings', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ obscurityLevel: obscurity, outputFormat, recommendationLimit: quantity, requestsPerMinute: rpm, spotifyPlaylistPublic: isPlaylistPublic, spotifySources }),
+        body: JSON.stringify({ obscurityLevel: obscurity, outputFormat, recommendationLimit: quantity, requestsPerMinute: rpm, spotifyPlaylistPublic: isPlaylistPublic, spotifySources, tasteFocus }),
       });
     }, 800);
     return () => clearTimeout(t);
-  }, [obscurity, outputFormat, quantity, rpm, isPlaylistPublic, spotifySources, user]);
+  }, [obscurity, outputFormat, quantity, rpm, isPlaylistPublic, spotifySources, tasteFocus, user]);
 
   // Update default model when provider changes
   useEffect(() => {
@@ -325,7 +333,7 @@ export default function Home() {
       setLastFmStatus(`✓ ${data.message}`);
       setUser(prev => prev ? {
         ...prev, lastFmConnected: true,
-        knownArtistCount: prev.knownArtistCount + data.artistCount,
+        knownArtistCount: data.totalKnownArtists ?? prev.knownArtistCount + data.artistCount,
         settings: { ...prev.settings, lastFmUsername: lastFmUsername.trim() },
       } : prev);
     } catch (e: unknown) { setLastFmStatus(`Error: ${e instanceof Error ? e.message : 'Failed'}`); }
@@ -371,7 +379,7 @@ export default function Home() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
-      setUser(prev => prev ? { ...prev, knownArtistCount: prev.knownArtistCount + data.addedArtists } : prev);
+      setUser(prev => prev ? { ...prev, knownArtistCount: data.totalKnownArtists ?? prev.knownArtistCount + data.addedArtists } : prev);
       addLog(`Spotify: ${data.message}`, 'success');
     } catch (e: unknown) { addLog(`Spotify fetch failed: ${e instanceof Error ? e.message : 'Error'}`, 'error'); }
     setSpotifyFetching(false);
@@ -424,12 +432,13 @@ export default function Home() {
     }
   };
 
-  const handleFileUpload = async (file: File, type: 'endsong' | 'lastfm_csv') => {
+  const handleFileUpload = async (files: File[], type: 'endsong' | 'lastfm_csv') => {
+    if (files.length === 0) return;
     const isLastFm = type === 'lastfm_csv';
     const setStatus = isLastFm ? setLastFmUploadStatus : setSpotifyUploadStatus;
-    setStatus('Uploading…');
+    setStatus(`Uploading ${files.length} file${files.length > 1 ? 's' : ''}…`);
     const formData = new FormData();
-    formData.append('file', file);
+    for (const f of files) formData.append('files', f);
     formData.append('type', type);
     try {
       const res = await fetch('/api/upload', { method: 'POST', body: formData });
@@ -463,11 +472,11 @@ export default function Home() {
     addLog(`Generating with ${selectedProvider} › ${modelInput}`, 'info');
     addLog(`Obscurity ${obscurity}/5 · ${outputFormat} · ${quantity} results${delayMs ? ` · ${rpm} RPM` : ''}`, 'info');
     try {
-      addLog('Loading listening history & exclusion list from DB…', 'info');
+      addLog(`Loading scored artist pool & exclusion list from DB (taste focus: ${tasteFocus})…`, 'info');
       const res = await fetch('/api/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ provider: selectedProvider, model: modelInput, obscurity, format: outputFormat, quantity, delayMs }),
+        body: JSON.stringify({ provider: selectedProvider, model: modelInput, obscurity, format: outputFormat, quantity, delayMs, tasteFocus }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
@@ -523,13 +532,14 @@ export default function Home() {
   const promptPreview = `You are an expert music curator. Analyse listening history and recommend NEW music.
 ━━━━━━━━━━━━━━━━━━━━━━━━━
 OBSCURITY TARGET: ${obscurity}/5 — ${OBSCURITY_LABELS[obscurity]}
+TASTE FOCUS: ${TASTE_FOCUS_OPTIONS.find(o => o.key === tasteFocus)?.label ?? tasteFocus}
 OUTPUT: ${quantity} ${outputFormat === 'tracks' ? 'track' : 'album'} recommendations
 ━━━━━━━━━━━━━━━━━━━━━━━━━
-USER'S TOP ARTISTS (weighted by play count):
-  [ ${user?.knownArtistCount ?? 0} artists from your listening history ]
+USER'S TOP ARTISTS (scored by taste affinity):
+  [ top ${Math.min(50, user?.knownArtistCount ?? 0)} of ${user?.knownArtistCount ?? 0} artists in your pool ]
 
-EXCLUDED ARTISTS (never recommend these):
-  [ same ${user?.knownArtistCount ?? 0} artists — full list sent to model ]
+EXCLUDED ARTISTS (never recommend these — enforced server-side):
+  [ all ${user?.knownArtistCount ?? 0} artists ]
 ━━━━━━━━━━━━━━━━━━━━━━━━━
 OUTPUT JSON SCHEMA:
 {
@@ -579,13 +589,13 @@ OUTPUT JSON SCHEMA:
       <header className="sticky top-0 z-50 bg-analog-bg/90 backdrop-blur border-b border-analog-border">
         {/* Gradient top bar */}
         <div className="h-0.5 gradient-bar w-full" />
-        <div className="max-w-3xl mx-auto px-6 py-3.5 flex items-center justify-between">
+        <div className="max-w-3xl mx-auto px-6 py-3 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <img src="/icon.svg" alt="Sonic Horizon" className="w-7 h-7 rounded object-cover border border-analog-border" />
             <h1 className="font-bold text-lg tracking-tight gradient-text">Sonic Horizon</h1>
             <span className="text-analog-text-muted text-xs hidden sm:block">Deep Music Discovery</span>
           </div>
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-3">
             <div className="hidden sm:flex items-center gap-1.5 text-xs">
               <button onClick={handleToggleArtists} className="flex items-center gap-1.5 hover:text-white transition-colors cursor-pointer">
                 <span className="w-1.5 h-1.5 rounded-full" style={{ background: hasHistory ? '#00E5FF' : '#27245A', boxShadow: hasHistory ? '0 0 6px #00E5FF' : 'none' }} />
@@ -599,12 +609,12 @@ OUTPUT JSON SCHEMA:
         </div>
       </header>
 
-      <main className="max-w-3xl mx-auto px-6 py-8 space-y-4">
+      <main className="max-w-3xl mx-auto px-6 py-10 space-y-6">
 
         {/* ═══ Imported Artists list ══════════════════════════════════════════ */}
         {artistsOpen && (
           <div className="bg-analog-card border border-analog-border rounded-xl overflow-hidden" style={{ boxShadow: '0 4px 24px rgba(0,0,0,0.4)' }}>
-            <div className="px-6 py-3 flex flex-wrap items-center gap-3 border-b border-analog-border">
+            <div className="px-6 py-3.5 flex flex-wrap items-center gap-3 border-b border-analog-border">
               <span className="font-semibold text-white">Imported Artists</span>
               <span className="text-xs text-analog-text-muted font-mono">
                 {artistsLoading ? 'Loading…' : `${artistsTotal} artists`}
@@ -655,17 +665,17 @@ OUTPUT JSON SCHEMA:
               active={isDragOverLastfm}
               onDragOver={() => setIsDragOverLastfm(true)}
               onDragLeave={() => setIsDragOverLastfm(false)}
-              onDrop={f => { setIsDragOverLastfm(false); handleFileUpload(f, 'lastfm_csv'); }}
+              onDrop={files => { setIsDragOverLastfm(false); handleFileUpload(files, 'lastfm_csv'); }}
               onClick={() => lastfmFileRef.current?.click()}
             >
               <p className="text-xs text-analog-text-muted text-center">
-                Drop or click to upload your <strong className="text-analog-text">Last.fm CSV file</strong>
+                Drop or click to upload your <strong className="text-analog-text">Last.fm CSV file(s)</strong> — you can select multiple
               </p>
-              <input ref={lastfmFileRef} type="file" accept=".csv" className="hidden"
-                onChange={e => { const f = e.target.files?.[0]; if (f) handleFileUpload(f, 'lastfm_csv'); }} />
+              <input ref={lastfmFileRef} type="file" accept=".csv" multiple className="hidden"
+                onChange={e => { const f = e.target.files ? Array.from(e.target.files) : []; if (f.length) handleFileUpload(f, 'lastfm_csv'); }} />
             </DropZone>
             <p className="text-xs text-analog-text-muted mt-1.5">
-              💡 Export your scrobbles free at <ExtLink href="https://lastfm.ghan.nl/export/">lastfm.ghan.nl/export ↗</ExtLink> — no login needed, just your username.
+              💡 Export your scrobbles free at <ExtLink href="https://lastfm.ghan.nl/export/">lastfm.ghan.nl/export ↗</ExtLink> — no login needed, just your username. Works with large histories.
             </p>
             <StatusMsg text={lastFmUploadStatus} />
           </div>
@@ -678,7 +688,7 @@ OUTPUT JSON SCHEMA:
           </div>
 
           {/* ── Option B: Connect & pull from API ── */}
-          <div className="space-y-3">
+          <div className="space-y-3.5">
             <div className="flex items-center gap-2 mb-1">
               <span className="text-xs font-bold px-2 py-0.5 rounded" style={{ background: 'rgba(255,0,110,0.15)', color: '#FF006E' }}>Option B</span>
               <SectionLabel text="Connect to your Last.fm account & fetch your top artists" />
@@ -688,6 +698,9 @@ OUTPUT JSON SCHEMA:
               <>Set <strong>Application Name</strong> to <code className="text-analog-text bg-analog-bg px-1.5 py-0.5 rounded text-xs">Sonic Horizon</code> and submit</>,
               <>Copy your <strong>API Key</strong> and save it below, then enter your username and hit Fetch</>,
             ]} />
+            <p className="text-xs text-analog-text-muted mt-1.5">
+              🔑 Already have a Last.fm API key from before? Reuse it via the <ExtLink href="https://www.last.fm/api/accounts">Last.fm API Accounts page ↗</ExtLink> — every app you've created shows its key there.
+            </p>
             <div className="flex gap-2">
               <input type="password" value={lastFmApiKey} onChange={e => setLastFmApiKey(e.target.value)}
                 placeholder={hasLastFmKey ? '•••••••••••••••• (saved)' : 'Enter Last.fm API Key'}
@@ -746,17 +759,17 @@ OUTPUT JSON SCHEMA:
               active={isDragOverSpotify}
               onDragOver={() => setIsDragOverSpotify(true)}
               onDragLeave={() => setIsDragOverSpotify(false)}
-              onDrop={f => { setIsDragOverSpotify(false); handleFileUpload(f, 'endsong'); }}
+              onDrop={files => { setIsDragOverSpotify(false); handleFileUpload(files, 'endsong'); }}
               onClick={() => spotifyFileRef.current?.click()}
             >
               <p className="text-xs text-analog-text-muted text-center">
-                Drop or click to upload <strong className="text-analog-text">endsong_*.json</strong> from your Spotify data export
+                Drop or click to upload <strong className="text-analog-text">endsong_*.json</strong> — select <em>all</em> of them at once
               </p>
-              <input ref={spotifyFileRef} type="file" accept=".json" className="hidden"
-                onChange={e => { const f = e.target.files?.[0]; if (f) handleFileUpload(f, 'endsong'); }} />
+              <input ref={spotifyFileRef} type="file" accept=".json" multiple className="hidden"
+                onChange={e => { const f = e.target.files ? Array.from(e.target.files) : []; if (f.length) handleFileUpload(f, 'endsong'); }} />
             </DropZone>
             <p className="text-xs text-analog-text-muted mt-1.5">
-              💡 Request your export at <ExtLink href="https://www.spotify.com/account/privacy">spotify.com/account/privacy ↗</ExtLink> → Extended Streaming History (takes ~30 days via email).
+              💡 Request your export at <ExtLink href="https://www.spotify.com/account/privacy">spotify.com/account/privacy ↗</ExtLink> → Extended Streaming History (takes ~30 days via email). Both <code className="text-analog-text bg-analog-bg px-1.5 py-0.5 rounded text-xs">endsong_*.json</code> and the older <code className="text-analog-text bg-analog-bg px-1.5 py-0.5 rounded text-xs">StreamingHistory*.json</code> files work.
             </p>
             <StatusMsg text={spotifyUploadStatus} />
           </div>
@@ -769,7 +782,7 @@ OUTPUT JSON SCHEMA:
           </div>
 
           {/* ── Option B: Connect & pull from API ── */}
-          <div className="space-y-3">
+          <div className="space-y-3.5">
             <div className="flex items-center gap-2 mb-1">
               <span className="text-xs font-bold px-2 py-0.5 rounded" style={{ background: 'rgba(255,0,110,0.15)', color: '#FF006E' }}>Option B</span>
               <SectionLabel text="Connect your Spotify account via OAuth & refresh artists" />
@@ -927,34 +940,46 @@ OUTPUT JSON SCHEMA:
               )}
             </div>
 
-            {/* Which Spotify data sources to import */}
+            {/* Which Spotify data sources to import (advanced) */}
             <div className="pt-2">
-              <label className="block text-xs text-analog-text-muted mb-2">
-                Spotify data sources to import
-                <span className="ml-1 text-sh-cyan font-normal">({spotifySources.length}/{SPOTIFY_SOURCES.length} on)</span>
-              </label>
-              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                {SPOTIFY_SOURCES.map(s => {
-                  const on = spotifySources.includes(s.key);
-                  return (
-                    <button key={s.key} onClick={() => toggleSpotifySource(s.key)}
-                      className={`px-3 py-2 text-xs rounded-lg border transition-all text-left flex items-center gap-2 cursor-pointer ${
-                        on ? 'border-analog-accent text-white' : 'border-analog-border text-analog-text-muted hover:text-white'
-                      }`}
-                      style={on ? { background: 'rgba(255,0,110,0.1)', boxShadow: '0 0 0 1px rgba(255,0,110,0.3)' } : {}}>
-                      <span className={`w-3 h-3 rounded-sm border flex items-center justify-center text-[9px] shrink-0 ${
-                        on ? 'bg-analog-accent border-analog-accent text-white' : 'border-analog-border'
-                      }`}>
-                        {on ? '✓' : ''}
-                      </span>
-                      {s.label}
-                    </button>
-                  );
-                })}
-              </div>
-              <p className="text-xs text-analog-text-muted mt-1.5">
-                All on by default. Unticked sources are skipped on the next refresh.
+              <p className="text-xs text-analog-text-muted mb-2">
+                All your Spotify data is fetched automatically on refresh. Tune which signals dominate under <strong className="text-white">&quot;Taste focus&quot;</strong> (Step 4).
               </p>
+              <button onClick={() => setShowAdvancedSources(!showAdvancedSources)}
+                className="w-full flex items-center justify-between px-3 py-2 text-xs rounded-lg border border-analog-border text-analog-text-muted hover:text-white transition-colors cursor-pointer">
+                <span className="flex items-center gap-2">
+                  <span className={`inline-block transition-transform ${showAdvancedSources ? 'rotate-90' : ''}`}>▸</span>
+                  Advanced — data sources to import
+                  <span className="text-sh-cyan font-normal">({spotifySources.length}/{SPOTIFY_SOURCES.length} on)</span>
+                </span>
+                <span>{showAdvancedSources ? 'Hide' : 'Show'}</span>
+              </button>
+              {showAdvancedSources && (
+                <div className="mt-2">
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                    {SPOTIFY_SOURCES.map(s => {
+                      const on = spotifySources.includes(s.key);
+                      return (
+                        <button key={s.key} onClick={() => toggleSpotifySource(s.key)}
+                          className={`px-3 py-2 text-xs rounded-lg border transition-all text-left flex items-center gap-2 cursor-pointer ${
+                            on ? 'border-analog-accent text-white' : 'border-analog-border text-analog-text-muted hover:text-white'
+                          }`}
+                          style={on ? { background: 'rgba(255,0,110,0.1)', boxShadow: '0 0 0 1px rgba(255,0,110,0.3)' } : {}}>
+                          <span className={`w-3 h-3 rounded-sm border flex items-center justify-center text-[9px] shrink-0 ${
+                            on ? 'bg-analog-accent border-analog-accent text-white' : 'border-analog-border'
+                          }`}>
+                            {on ? '✓' : ''}
+                          </span>
+                          {s.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <p className="text-xs text-analog-text-muted mt-1.5">
+                    Unticked sources are <strong className="text-white">skipped entirely</strong> on the next refresh — no API calls are made for them and they contribute no signals. All on by default; most people never need to touch this.
+                  </p>
+                </div>
+              )}
             </div>
 
             {/* Clear artists */}
@@ -1071,7 +1096,7 @@ OUTPUT JSON SCHEMA:
               <span className="text-xs text-analog-text-muted">requests/min (leave blank for unlimited)</span>
             </div>
             <div className="flex flex-wrap gap-2 mt-2">
-              {[[0, 'Unlimited'], [15, '15 RPM (Gemini free)'], [60, '60 RPM (OpenAI free)'], [20, '20 RPM (OpenRouter free)']].map(([val, label]) => (
+              {[[0, 'Unlimited'], [5, '5 RPM (safe default)'], [15, '15 RPM (Gemini free)'], [20, '20 RPM (OpenRouter free)'], [60, '60 RPM (OpenAI free)']].map(([val, label]) => (
                 <button key={val} onClick={() => setRpm(val as number)}
                   className={`text-xs px-2.5 py-1 rounded border transition-colors ${
                     rpm === val ? 'border-analog-accent text-white' : 'border-analog-border text-analog-text-muted hover:border-analog-accent hover:text-white'
@@ -1081,6 +1106,10 @@ OUTPUT JSON SCHEMA:
                 </button>
               ))}
             </div>
+            <p className="text-xs text-analog-text-muted mt-2 leading-relaxed">
+              ℹ Each <strong className="text-white">Generate</strong> run makes exactly <strong className="text-white">1 LLM call</strong>, so a high limit isn&apos;t needed —
+              this setting just inserts a small delay between runs to protect your quota. <strong className="text-white">5/min is a safe default</strong>; raise it (or leave blank for unlimited) if you&apos;re running discoveries back-to-back.
+            </p>
           </div>
         </Section>
 
@@ -1107,6 +1136,34 @@ OUTPUT JSON SCHEMA:
             <div className="flex justify-between text-xs text-analog-text-muted mt-1 font-mono">
               <span>Mainstream</span><span>Underground</span>
             </div>
+          </div>
+
+          {/* Taste focus */}
+          <div>
+            <div className="flex items-baseline justify-between mb-2">
+              <label className="text-sm font-medium text-white">Taste focus</label>
+              <span className="text-xs font-mono" style={{ color: '#00E5FF' }}>
+                {TASTE_FOCUS_OPTIONS.find(o => o.key === tasteFocus)?.label ?? tasteFocus}
+              </span>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              {TASTE_FOCUS_OPTIONS.map(o => {
+                const on = tasteFocus === o.key;
+                return (
+                  <button key={o.key} onClick={() => setTasteFocus(o.key)}
+                    className={`px-3 py-2 text-xs rounded-lg border transition-all text-left ${
+                      on ? 'border-analog-accent text-white' : 'border-analog-border text-analog-text-muted hover:text-white'
+                    }`}
+                    style={on ? { background: 'rgba(0,229,255,0.1)', boxShadow: '0 0 0 1px rgba(0,229,255,0.35)' } : {}}>
+                    <span className="block font-semibold">{o.label}</span>
+                    <span className="block text-[10px] mt-0.5 opacity-70">{o.hint}</span>
+                  </button>
+                );
+              })}
+            </div>
+            <p className="text-xs text-analog-text-muted mt-1.5">
+              Skews which signals dominate the seed pool. Always uses your own listening data — only the emphasis changes.
+            </p>
           </div>
 
           <div className="grid grid-cols-2 gap-4">
@@ -1181,7 +1238,7 @@ OUTPUT JSON SCHEMA:
                 Coming Soon
               </span>
             </div>
-            <div className="px-6 pb-5 pt-2 space-y-3 border-t border-analog-border">
+            <div className="px-6 pb-6 pt-3 space-y-3.5 border-t border-analog-border">
               <p className="text-xs text-analog-text-muted">
                 Automatically re-run your discovery on a schedule. Will refresh Last.fm / Spotify data first,
                 then generate new recommendations — never suggesting anything you&apos;ve already received.
@@ -1199,7 +1256,7 @@ OUTPUT JSON SCHEMA:
         </div>
 
         {/* ═══ STEP 6: Generate ════════════════════════════════════════════════ */}
-        <div className="space-y-4">
+        <div className="space-y-5">
           {!hasHistory && (
             <div className="text-center py-3 px-4 rounded-lg text-sm" style={{ background: 'rgba(251,191,36,0.08)', border: '1px solid rgba(251,191,36,0.25)', color: '#FBB724' }}>
               ⚠ Connect Last.fm or Spotify (Steps 1–2) to build your listening profile first
@@ -1253,35 +1310,68 @@ OUTPUT JSON SCHEMA:
           <section className="space-y-4">
             {/* Results (First) */}
             {results.length > 0 && (
-              <div className="bg-analog-card rounded-xl overflow-hidden" style={{ border: '1px solid rgba(255,0,110,0.3)', boxShadow: '0 0 40px rgba(255,0,110,0.08)' }}>
-                <div className="px-6 py-4 border-b border-analog-border flex items-center gap-3">
+              <div className="bg-analog-card rounded-xl overflow-hidden" style={{ border: '1px solid rgba(255,0,110,0.25)', boxShadow: '0 0 28px rgba(255,0,110,0.06)' }}>
+                <div className="px-6 py-5 border-b border-analog-border flex items-center gap-3">
                   <div className="w-2.5 h-2.5 rounded-full" style={{ background: '#00E5FF', boxShadow: '0 0 8px #00E5FF' }} />
                   <span className="font-semibold text-white">{results.length} Discovery Results</span>
                   <span className="text-xs text-analog-text-muted">— all added to exclusion list</span>
                 </div>
 
                 <div className="divide-y divide-analog-border">
-                  {results.map((item, i) => (
-                    <div key={i} className="px-6 py-4 hover:bg-analog-bg/40 transition-colors flex gap-4">
-                      <span className="text-analog-text-muted font-mono text-sm pt-0.5 w-6 shrink-0">{String(i + 1).padStart(2, '0')}</span>
-                      <div className="min-w-0">
-                        <p className="text-white font-semibold">
-                          {item.title}
-                          <span className="text-analog-text-muted font-normal text-sm"> — </span>
-                          <span style={{ color: '#FF006E' }}>{item.artist}</span>
-                        </p>
-                        <p className="text-sm text-analog-text-muted mt-1 italic">{item.reasoning}</p>
-                        <div className="flex flex-wrap gap-1.5 mt-2">
-                          {item.genre_tags?.map((tag, j) => (
-                            <span key={j} className="text-xs bg-analog-border px-2 py-0.5 rounded text-analog-text-muted">{tag}</span>
-                          ))}
+                  {results.map((item, i) => {
+                    const trackId = outputFormat === 'tracks' ? (item.spotifyUri?.split(':').pop() ?? '') : '';
+                    const embedTrackId = trackId || item.spotifyUris?.[0]?.split(':').pop() || '';
+                    return (
+                      <div key={i} className="px-6 py-5 hover:bg-analog-bg/40 transition-colors flex gap-4">
+                        <span className="text-analog-text-muted font-mono text-sm pt-0.5 w-6 shrink-0">{String(i + 1).padStart(2, '0')}</span>
+                        <div className="min-w-0 flex-1">
+                          <p className="text-white font-semibold">
+                            {item.title}
+                            <span className="text-analog-text-muted font-normal text-sm"> — </span>
+                            <span style={{ color: '#FF006E' }}>{item.artist}</span>
+                          </p>
+                          <p className="text-sm text-analog-text-muted mt-1 italic">{item.reasoning}</p>
+                          <div className="flex flex-wrap gap-1.5 mt-2">
+                            {item.genre_tags?.map((tag, j) => (
+                              <span key={j} className="text-xs bg-analog-border px-2 py-0.5 rounded text-analog-text-muted">{tag}</span>
+                            ))}
+                          </div>
+                          {embedTrackId ? (
+                            <div className="mt-3.5">
+                              <iframe
+                                title={`${item.artist} — ${item.title}`}
+                                src={`https://open.spotify.com/embed/track/${embedTrackId}`}
+                                width="100%" height="80" frameBorder="0"
+                                allow="autoplay; encrypted-media; clipboard-write; fullscreen"
+                                loading="lazy"
+                                style={{ borderRadius: 8, background: 'transparent' }}
+                              />
+                            </div>
+                          ) : item.spotifyAlbumId ? (
+                            <div className="mt-3.5">
+                              <iframe
+                                title={`${item.artist} — ${item.title}`}
+                                src={`https://open.spotify.com/embed/album/${item.spotifyAlbumId}`}
+                                width="100%" height="352" frameBorder="0"
+                                allow="autoplay; encrypted-media; clipboard-write; fullscreen"
+                                loading="lazy"
+                                style={{ borderRadius: 8, background: 'transparent' }}
+                              />
+                            </div>
+                          ) : null}
                         </div>
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
 
-                <div className="px-6 py-4 border-t border-analog-border flex flex-wrap gap-3 items-center justify-between">
+                <div className="px-6 py-3.5 border-t border-analog-border">
+                  <p className="text-xs text-analog-text-muted">
+                    Each result has its Spotify player embedded inline — just press play. Requires Spotify to be connected (Step 2).
+                  </p>
+                </div>
+
+                <div className="px-6 py-5 border-t border-analog-border flex flex-wrap gap-3 items-center justify-between">
                   <div className="flex flex-col sm:flex-row gap-2 items-start sm:items-center">
                     {syncResult && <p className={`text-sm ${syncResult.startsWith('✓') ? '' : 'text-red-400'}`} style={syncResult.startsWith('✓') ? { color: '#00E5FF' } : {}}>{syncResult}</p>}
                     {spotifyPlaylistUrl && (
@@ -1313,7 +1403,7 @@ OUTPUT JSON SCHEMA:
             {/* Log (Second - Bottom) */}
             {logs.length > 0 && (
               <div className="bg-analog-card border border-analog-border rounded-xl overflow-hidden">
-                <div className="px-4 py-2 border-b border-analog-border flex items-center gap-2">
+                <div className="px-5 py-3 border-b border-analog-border flex items-center gap-2">
                   <span className="w-2 h-2 rounded-full" style={{
                     background: generating ? '#FF006E' : results.length > 0 ? '#00E5FF' : '#FF3D3D',
                     boxShadow: generating ? '0 0 8px #FF006E' : results.length > 0 ? '0 0 8px #00E5FF' : 'none',
@@ -1321,7 +1411,7 @@ OUTPUT JSON SCHEMA:
                   }} />
                   <span className="text-xs font-mono text-analog-text-muted">Generation Log</span>
                 </div>
-                <div className="p-4 font-mono text-xs space-y-1 max-h-44 overflow-y-auto">
+                <div className="p-5 font-mono text-xs space-y-1 max-h-44 overflow-y-auto">
                   {logs.map((log, i) => (
                     <div key={i} className="flex gap-3" style={{
                       color: log.type === 'success' ? '#00E5FF' : log.type === 'error' ? '#FF3D3D' : log.type === 'warn' ? '#FBB724' : '#6B5E9B',
@@ -1354,7 +1444,7 @@ function Section({ num, title, collapsed, onToggle, statusBadge, children }: {
   return (
     <div className="bg-analog-card border border-analog-border rounded-xl overflow-hidden" style={{ boxShadow: '0 4px 24px rgba(0,0,0,0.4)' }}>
       <button onClick={onToggle}
-        className="w-full flex items-center gap-3 px-6 py-4 hover:bg-analog-bg/30 transition-colors text-left">
+        className="w-full flex items-center gap-3 px-6 py-5 hover:bg-analog-bg/30 transition-colors text-left">
         <span className="font-mono text-sm font-bold shrink-0" style={{ color: '#FF006E' }}>{num}</span>
         <span className="font-semibold text-white">{title}</span>
         <div className="flex-1 flex items-center gap-2 min-w-0">
@@ -1362,7 +1452,7 @@ function Section({ num, title, collapsed, onToggle, statusBadge, children }: {
         </div>
         <ChevronIcon collapsed={collapsed} />
       </button>
-      {!collapsed && <div className="px-6 pb-6 space-y-4 border-t border-analog-border pt-5">{children}</div>}
+      {!collapsed && <div className="px-6 pb-7 space-y-5 border-t border-analog-border pt-6">{children}</div>}
     </div>
   );
 }
@@ -1445,13 +1535,13 @@ function StatusMsg({ text, inline }: { text: string; inline?: boolean }) {
 
 function DropZone({ active, onDragOver, onDragLeave, onDrop, onClick, children }: {
   active: boolean; onDragOver: () => void; onDragLeave: () => void;
-  onDrop: (f: File) => void; onClick: () => void; children: React.ReactNode;
+  onDrop: (files: File[]) => void; onClick: () => void; children: React.ReactNode;
 }) {
   return (
     <div
       onDragOver={e => { e.preventDefault(); onDragOver(); }}
       onDragLeave={onDragLeave}
-      onDrop={e => { e.preventDefault(); const f = e.dataTransfer.files[0]; if (f) onDrop(f); }}
+      onDrop={e => { e.preventDefault(); const files = Array.from(e.dataTransfer.files); if (files.length) onDrop(files); }}
       onClick={onClick}
       className="border border-dashed rounded-lg p-4 cursor-pointer transition-all"
       style={{

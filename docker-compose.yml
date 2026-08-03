@@ -9,9 +9,18 @@ services:
     volumes:
       - ./config:/config
       - ./uploads:/data/uploads
+      - db-data:/data/db
     environment:
       - NODE_ENV=production
-      - DATABASE_URL=file:/config/pde.db
+      - DATABASE_URL=file:/data/db/pde.db
       - JWT_SECRET=${JWT_SECRET:?JWT_SECRET missing - add it to .env}
       - ENCRYPTION_SECRET=${ENCRYPTION_SECRET:?ENCRYPTION_SECRET missing - add it to .env}
     restart: unless-stopped
+
+volumes:
+  # The SQLite DB lives on a named volume, NOT the bind-mounted ./config.
+  # The config mount sits on the Windows host (under OneDrive), and WAL-mode
+  # SQLite on that filesystem hits SQLITE_IOERR_SHORT_READ after large writes
+  # (uploads) and never recovers until restart. A named volume runs on the
+  # container VM's native filesystem, which fully supports WAL.
+  db-data:

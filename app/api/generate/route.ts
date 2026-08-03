@@ -4,6 +4,10 @@ import { getCurrentUserId } from '@/lib/auth';
 import { getDecryptedKey } from '@/lib/keys';
 import { generateDiscoveryPlaylist, ProviderType } from '@/lib/llm';
 import { getValidSpotifyAccessToken, searchSpotifyTrack, searchSpotifyAlbumTracks } from '@/lib/spotify';
+import { rankSeeds, normalizeArtistName, isTasteFocus, TASTE_FOCUS_DEFAULT, isPoolEligible, isBaselineEligible, type TasteFocus } from '@/lib/artistScore';
+
+const SEED_LIMIT = 50;
+const EXCLUSION_LIST_LIMIT = 500;
 
 export async function POST(req: Request) {
   const userId = await getCurrentUserId();
@@ -18,6 +22,7 @@ export async function POST(req: Request) {
       format = 'tracks',
       quantity = 20,
       delayMs = 0,
+      tasteFocus,
     } = body;
 
     if (!provider) return NextResponse.json({ error: 'Provider required' }, { status: 400 });
@@ -28,33 +33,49 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: `No saved API key for ${provider}. Please add one in Step 2.` }, { status: 400 });
     }
 
-    // Load user's top artists weighted by play frequency
-    const artistCounts = await prisma.streamingHistory.groupBy({
-      by: ['artistName'],
+    // Resolve taste focus: request body wins, otherwise the saved setting.
+    const settings = await prisma.settings.findUnique({ where: { userId } });
+    const focus: TasteFocus = isTasteFocus(tasteFocus)
+      ? tasteFocus
+      : isTasteFocus(settings?.tasteFocus ?? '')
+        ? (settings!.tasteFocus as TasteFocus)
+        : TASTE_FOCUS_DEFAULT;
+
+    // The whole known-artist table is the hard exclusion baseline...
+    const allArtists = await prisma.knownArtist.findMany({
       where: { userId },
-      _count: { artistName: true },
-      orderBy: { _count: { artistName: 'desc' } },
-      take: 100,
+      select: { artistName: true, playCount: true, historyScore: true, signals: true, lastSeenAt: true },
     });
 
-    if (artistCounts.length === 0) {
+    // ...filtered by the noise floor: history-only artists with <3 real plays
+    // are neither "known taste" (baseline) nor seed material. API signals always
+    // qualify; legacy imports qualify for the baseline but never the seeds.
+    const baselineArtists = allArtists.filter(isBaselineEligible);
+    const poolArtists = allArtists.filter(isPoolEligible);
+
+    if (baselineArtists.length === 0) {
       return NextResponse.json({
-        error: 'No listening history found. Connect Last.fm or Spotify first (Step 1).',
+        error: 'No listening profile found. Connect Last.fm or Spotify (Step 1) to build your artist pool.',
       }, { status: 400 });
     }
 
-    // Load exclusion list (all known artists)
-    const knownArtists = await prisma.knownArtist.findMany({
-      where: { userId },
-      select: { artistName: true },
-    });
-    const exclusionList = knownArtists.map(a => a.artistName);
+    if (poolArtists.length === 0) {
+      return NextResponse.json({
+        error: `Your profile has no qualifying listening data yet (artists need 3+ real plays, or a followed/saved/liked signal). Connect Spotify or Last.fm in Step 1 to build your taste profile.`,
+      }, { status: 400 });
+    }
 
-    // Build weighted artist list for the prompt
-    const topArtists = artistCounts.map(a => ({
-      name: a.artistName,
-      weight: a._count.artistName,
-    }));
+    const excludedSet = new Set(baselineArtists.map(a => normalizeArtistName(a.artistName)));
+
+    // ...and the top-scored subset is the seed pool for the prompt.
+    const seeds = rankSeeds(poolArtists as any, focus, SEED_LIMIT);
+    const topArtists = seeds.map(s => ({ name: s.artistName, weight: s.score }));
+
+    // Capped in-prompt exclusion list (the code-side filter below enforces the
+    // full baseline no matter what the model does).
+    const exclusionSample = rankSeeds(baselineArtists as any, focus, EXCLUSION_LIST_LIMIT)
+      .map(s => s.artistName);
+    const excludedCount = baselineArtists.length;
 
     const systemPrompt = `You are an expert music curator and deep-crate collector. 
 Analyze the user's historical listening profile below and recommend NEW music they have never heard.
@@ -64,12 +85,15 @@ CRITICAL CONSTRAINTS:
 2. Ignore recency bias - analyse the full long-term taste profile.
 3. Obscurity Target: Level ${obscurity}/5 (1=Mainstream pop/rock, 3=Critically acclaimed indie, 5=Underground/Bandcamp/extremely niche).
 4. Output MUST be valid JSON matching exactly the schema below. No markdown, no explanation.
+5. QUALITY: Recommend genuinely GOOD music - critically acclaimed, well-reviewed, or respected within its genre/scene. Never pad the list with filler, novelty tracks, low-effort or throwaway releases. At higher obscurity, this matters MORE, not less: an underground pick should still be a great artist with a strong local reputation, solid reviews, or a respected cult following - not a random obscure unknown. If unsure between two candidates, pick the better-reviewed one.
 
-USER'S TOP ARTISTS (weighted by play count):
-${topArtists.slice(0, 50).map(a => `  - ${a.name} (${a.weight} plays)`).join('\n')}
+USER'S TOP ARTISTS (scored by taste affinity — higher score = stronger signal):
+${topArtists.map(a => `  - ${a.name} (score ${a.weight.toFixed(1)})`).join('\n')}
 
 EXCLUDED ARTISTS — DO NOT RECOMMEND ANY OF THESE:
-${exclusionList.join(', ')}
+${exclusionSample.join(', ')}
+
+(${excludedCount} artists total in the exclusion list; ${excludedCount - exclusionSample.length} more are enforced server-side and forbidden just as strictly.)
 
 OUTPUT SCHEMA (return exactly this JSON, no other text):
 {
@@ -77,7 +101,7 @@ OUTPUT SCHEMA (return exactly this JSON, no other text):
     {
       "artist": "Artist Name",
       "title": "${format === 'tracks' ? 'Track Title' : 'Album Title'}",
-      "reasoning": "One sentence connecting this to the user's taste profile",
+      "reasoning": "One sentence connecting this to the user's taste profile and why this artist is high quality (acclaim, reputation, or craft)",
       "genre_tags": ["Tag1", "Tag2"]
     }
   ]
@@ -99,22 +123,34 @@ OUTPUT SCHEMA (return exactly this JSON, no other text):
       return NextResponse.json({ error: 'LLM returned no recommendations' }, { status: 500 });
     }
 
+    // Code-side hard exclusion: drop anything that maps to a known artist,
+    // regardless of what the prompt said.
+    const cleaned = (result.recommendations as any[]).filter((rec: any) => {
+      const artist = String(rec.artist || rec.artistName || '').trim();
+      if (!artist) return false;
+      return !excludedSet.has(normalizeArtistName(artist));
+    });
+
+    if (cleaned.length === 0) {
+      return NextResponse.json({ error: 'The model only suggested artists already in your listening history. Try again or raise the quantity.' }, { status: 500 });
+    }
+
     // Pre-verify candidates against Spotify if token is available
     const spotifyToken = await getValidSpotifyAccessToken(userId);
-    let finalRecommendations = result.recommendations;
+    let finalRecommendations = cleaned;
 
     if (spotifyToken) {
       const verified = [];
-      for (const rec of (result.recommendations as any[])) {
+      for (const rec of cleaned) {
         if (verified.length >= quantity) break;
         const artist = rec.artist || rec.artistName || '';
         const title = rec.title || rec.trackName || rec.album || rec.albumName || '';
         if (!artist || !title) continue;
 
         if (format === 'albums') {
-          const albumUris = await searchSpotifyAlbumTracks(spotifyToken, artist, title);
-          if (albumUris.length > 0) {
-            verified.push({ ...rec, spotifyUris: albumUris });
+          const albumResult = await searchSpotifyAlbumTracks(spotifyToken, artist, title);
+          if (albumResult.uris.length > 0) {
+            verified.push({ ...rec, spotifyUris: albumResult.uris, spotifyAlbumId: albumResult.albumId });
           }
         } else {
           const track = await searchSpotifyTrack(spotifyToken, artist, title);
@@ -126,10 +162,10 @@ OUTPUT SCHEMA (return exactly this JSON, no other text):
       if (verified.length > 0) {
         finalRecommendations = verified;
       } else {
-        finalRecommendations = result.recommendations.slice(0, quantity);
+        finalRecommendations = cleaned.slice(0, quantity);
       }
     } else {
-      finalRecommendations = result.recommendations.slice(0, quantity);
+      finalRecommendations = cleaned.slice(0, quantity);
     }
 
     return NextResponse.json({ recommendations: finalRecommendations });

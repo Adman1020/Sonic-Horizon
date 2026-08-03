@@ -38,7 +38,7 @@ ENV DATABASE_URL=file:/config/pde.db
 RUN addgroup --system --gid 1001 nodejs && \
     useradd --system --uid 1001 --gid nodejs --create-home --home-dir /home/nextjs nextjs
 
-RUN mkdir -p /config /data/uploads && chown nextjs:nodejs /config /data/uploads
+RUN mkdir -p /config /data/uploads /data/db && chown nextjs:nodejs /config /data/uploads /data/db
 
 COPY --from=builder /app/public ./public
 RUN mkdir .next && chown nextjs:nodejs .next

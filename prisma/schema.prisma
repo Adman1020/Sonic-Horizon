@@ -50,11 +50,15 @@ model StreamingHistory {
 }
 
 model KnownArtist {
-  id         String   @id @default(uuid())
-  artistName String
-  userId     String
-  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  addedAt    DateTime @default(now())
+  id           String    @id @default(uuid())
+  artistName   String
+  userId       String
+  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  addedAt      DateTime  @default(now())
+  playCount    Int       @default(0)
+  historyScore Float     @default(0)
+  signals      String    @default("{}")
+  lastSeenAt   DateTime?
 
   @@unique([userId, artistName])
 }
@@ -70,10 +74,11 @@ model Settings {
   obscurityLevel       Int      @default(3)
   outputFormat         String   @default("tracks")
   recommendationLimit    Int      @default(20)
-  requestsPerMinute      Int      @default(0)
+  requestsPerMinute      Int      @default(5)
   spotifyPlaylistPublic  Boolean  @default(true)
   scheduleMode           String   @default("manual")
   spotifySources         String   @default("all")
+  tasteFocus             String   @default("automatic")
   createdAt              DateTime @default(now())
   updatedAt              DateTime @updatedAt
 }

@@ -24,7 +24,6 @@ export interface Recommendation {
   reasoning: string;
   genre_tags: string[];
 }
-
 export interface LLMResult {
   recommendations: Recommendation[];
 }

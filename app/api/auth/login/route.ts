@@ -4,16 +4,7 @@ import { verifyPassword, signToken, SESSION_MAX_AGE_SECONDS } from '@/lib/auth';
 import { cookies } from 'next/headers';
 import { recordFailure, getRetryAfter, clearFailures } from '@/lib/rateLimit';
 
-function clientIp(req: Request): string {
-  const fwd = req.headers.get('x-forwarded-for');
-  if (fwd) return fwd.split(',')[0].trim();
-  return req.headers.get('x-real-ip') ?? 'unknown';
-}
-
 export async function POST(req: Request) {
-  const ip = clientIp(req);
-  const ipKey = `ip:${ip}`;
-
   try {
     const { username, password } = await req.json();
     const cleanUsername = String(username ?? '').trim();
@@ -24,13 +15,15 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Username and password required.' }, { status: 400 });
     }
 
-    const ipWait = getRetryAfter(ipKey);
+    // Rate limiting is per-username only. Every client behind Docker's NAT
+    // looks like the same IP, so an IP bucket would lock everyone out when
+    // one device mis-types a password.
     const userWait = getRetryAfter(userKey);
-    if (ipWait > 0 || userWait > 0) {
-      const wait = Math.max(ipWait, userWait);
+    if (userWait > 0) {
+      console.warn(`[login] rate-limited before verify: username=${cleanUsername} wait=${userWait}s`);
       return NextResponse.json(
-        { error: `Too many failed login attempts. Try again in ${wait}s.` },
-        { status: 429, headers: { 'Retry-After': String(wait) } }
+        { error: `Too many failed login attempts. Try again in ${userWait}s.` },
+        { status: 429, headers: { 'Retry-After': String(userWait) } }
       );
     }
 
@@ -41,8 +34,8 @@ export async function POST(req: Request) {
     const isValid = user && (await verifyPassword(cleanPassword, user.passwordHash));
 
     if (!user || !isValid) {
-      const res = recordFailure(ipKey);
-      if (cleanUsername) recordFailure(userKey);
+      const res = recordFailure(userKey);
+      console.warn(`[login] failed attempt: username=${cleanUsername} exists=${Boolean(user)} locked=${res.locked} pwLen=${cleanPassword.length} leadingSpace=${/^\s/.test(cleanPassword)} trailingSpace=${/\s$/.test(cleanPassword)} firstChar=${cleanPassword ? cleanPassword.charCodeAt(0) : null}`);
       if (res.locked) {
         return NextResponse.json(
           { error: `Too many failed login attempts. Try again in ${res.retryAfter}s.` },
@@ -52,7 +45,6 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Invalid credentials.' }, { status: 401 });
     }
 
-    clearFailures(ipKey);
     clearFailures(userKey);
 
     const token = await signToken({

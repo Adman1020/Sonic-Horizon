@@ -3,7 +3,9 @@ import { prisma } from '@/lib/prisma';
 import { getCurrentUserId } from '@/lib/auth';
 import { fetchSpotifyTopArtists, fetchSpotifyTopTracks, fetchSpotifyFollowedArtists, fetchSpotifySavedAlbums, fetchSpotifyLikedTracks, fetchSpotifyUserPlaylists, fetchSpotifyPlaylistTracks, fetchSpotifyRecentTracks } from '@/lib/spotify';
 import { getDecryptedKey } from '@/lib/keys';
-import { parseSpotifySources, SPOTIFY_SOURCES } from '@/lib/spotifySources';
+import { parseSpotifySources, SPOTIFY_SOURCES, DEFAULT_SPOTIFY_SOURCES } from '@/lib/spotifySources';
+import { applySignalsToArtists } from '@/lib/artistScoreDb';
+import type { SignalMap } from '@/lib/artistScore';
 
 async function refreshSpotifyToken(userId: string, refreshToken: string): Promise<string | null> {
   const userClientId = await getDecryptedKey(userId, 'spotify_client_id');
@@ -35,25 +37,6 @@ async function refreshSpotifyToken(userId: string, refreshToken: string): Promis
   return data.access_token ?? null;
 }
 
-async function addArtistToDb(userId: string, artistName: string, now: Date): Promise<boolean> {
-  if (!artistName) return false;
-  try {
-    const existing = await prisma.knownArtist.findUnique({
-      where: { userId_artistName: { userId, artistName } },
-    });
-    if (!existing) {
-      await prisma.knownArtist.create({
-        data: { userId, artistName, addedAt: now },
-      });
-      await prisma.streamingHistory.create({
-        data: { userId, source: 'spotify', artistName, trackName: '[Imported Artist]', playedAt: now },
-      });
-      return true;
-    }
-  } catch { /* skip */ }
-  return false;
-}
-
 export async function POST(req: Request) {
   const userId = await getCurrentUserId();
   if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -69,7 +52,7 @@ export async function POST(req: Request) {
 
     const enabledSources = requestedSources
       ? parseSpotifySources(requestedSources)
-      : parseSpotifySources(settings.spotifySources);
+      : [...DEFAULT_SPOTIFY_SOURCES];
     const activeLabels = SPOTIFY_SOURCES
       .filter(s => enabledSources.includes(s.key))
       .map(s => s.label);
@@ -91,17 +74,28 @@ export async function POST(req: Request) {
       });
     }
 
-    const now = new Date();
-    const artistNamesSet = new Set<string>();
+    // Collect per-artist signal counts (source → occurrence count). Weights are
+    // applied later in lib/artistScore.ts; the fetch only records provenance.
+    const artistSignals = new Map<string, SignalMap>();
+    const bump = (name: string | undefined, signalKey: string) => {
+      const trimmed = name?.trim();
+      if (!trimmed) return;
+      const counts = artistSignals.get(trimmed) ?? {};
+      counts[signalKey] = (counts[signalKey] ?? 0) + 1;
+      artistSignals.set(trimmed, counts);
+    };
 
-    // 1. Top Artists (short_term, medium_term, long_term)
+    // 1. Top Artists (short_term ×4, medium_term ×3, long_term ×2)
     if (enabledSources.includes('topArtists')) {
+      const signalKeyByRange: Record<string, string> = {
+        short_term: 'topArtistsShort',
+        medium_term: 'topArtistsMedium',
+        long_term: 'topArtistsLong',
+      };
       for (const timeRange of ['short_term', 'medium_term', 'long_term'] as const) {
         try {
           const data = await fetchSpotifyTopArtists(accessToken, timeRange);
-          for (const artist of data.items ?? []) {
-            if (artist.name) artistNamesSet.add(artist.name.trim());
-          }
+          for (const artist of data.items ?? []) bump(artist.name, signalKeyByRange[timeRange]);
         } catch (e) {
           console.error(`Failed to fetch ${timeRange} top artists:`, e);
         }
@@ -114,9 +108,7 @@ export async function POST(req: Request) {
         try {
           const data = await fetchSpotifyTopTracks(accessToken, timeRange);
           for (const track of data.items ?? []) {
-            for (const artist of track.artists ?? []) {
-              if (artist.name) artistNamesSet.add(artist.name.trim());
-            }
+            for (const artist of track.artists ?? []) bump(artist.name, 'topTracks');
           }
         } catch (e) {
           console.error(`Failed to fetch ${timeRange} top tracks:`, e);
@@ -133,9 +125,7 @@ export async function POST(req: Request) {
           const artists = data.artists?.items ?? [];
           if (artists.length === 0) break;
 
-          for (const artist of artists) {
-            if (artist.name) artistNamesSet.add(artist.name.trim());
-          }
+          for (const artist of artists) bump(artist.name, 'followedArtists');
           lastArtistId = artists[artists.length - 1]?.id;
           if (!data.artists?.cursors?.after) break;
         } catch {
@@ -152,9 +142,7 @@ export async function POST(req: Request) {
           const items = data.items ?? [];
           if (items.length === 0) break;
           for (const item of items) {
-            for (const artist of item.album?.artists ?? []) {
-              if (artist.name) artistNamesSet.add(artist.name.trim());
-            }
+            for (const artist of item.album?.artists ?? []) bump(artist.name, 'savedAlbums');
           }
         } catch {
           break;
@@ -171,9 +159,7 @@ export async function POST(req: Request) {
           if (items.length === 0) break;
 
           for (const item of items) {
-            for (const artist of item.track?.artists ?? []) {
-              if (artist.name) artistNamesSet.add(artist.name.trim());
-            }
+            for (const artist of item.track?.artists ?? []) bump(artist.name, 'likedSongs');
           }
         } catch {
           break;
@@ -189,9 +175,7 @@ export async function POST(req: Request) {
           try {
             const trackData = await fetchSpotifyPlaylistTracks(accessToken, pl.id, 100, 0);
             for (const item of trackData.items ?? []) {
-              for (const artist of item.item?.artists ?? []) {
-                if (artist.name) artistNamesSet.add(artist.name.trim());
-              }
+              for (const artist of item.item?.artists ?? []) bump(artist.name, 'playlists');
             }
           } catch { /* skip playlist if fails */ }
         }
@@ -205,32 +189,23 @@ export async function POST(req: Request) {
       try {
         const recentData = await fetchSpotifyRecentTracks(accessToken);
         for (const item of recentData.items ?? []) {
-          for (const artist of item.track?.artists ?? []) {
-            if (artist.name) artistNamesSet.add(artist.name.trim());
-          }
+          for (const artist of item.track?.artists ?? []) bump(artist.name, 'recentTracks');
         }
       } catch (e) {
         console.error('Failed to fetch recent tracks:', e);
       }
     }
 
-    // Batch insert into DB
-    const allCollected = Array.from(artistNamesSet);
-    const existingKnown = await prisma.knownArtist.findMany({
-      where: { userId, artistName: { in: allCollected } },
+    // Write signals into the known-artist pool (merging into existing rows).
+    const existingNames = await prisma.knownArtist.findMany({
+      where: { userId },
       select: { artistName: true },
     });
-    const existingSet = new Set(existingKnown.map(k => k.artistName));
-    const newArtistNames = allCollected.filter(name => !existingSet.has(name));
+    const existingSet = new Set(existingNames.map(k => k.artistName));
+    const newArtistNames = Array.from(artistSignals.keys()).filter(name => !existingSet.has(name));
 
-    if (newArtistNames.length > 0) {
-      await prisma.knownArtist.createMany({
-        data: newArtistNames.map(artistName => ({ userId, artistName, addedAt: now })),
-      });
-      await prisma.streamingHistory.createMany({
-        data: newArtistNames.map(artistName => ({ userId, source: 'spotify', artistName, trackName: '[Imported Artist]', playedAt: now })),
-      });
-    }
+    const touched = await applySignalsToArtists(userId, artistSignals, new Date());
+    const totalKnownArtists = await prisma.knownArtist.count({ where: { userId } });
 
     const scannedSummary = activeLabels.length === 0
       ? 'no sources selected'
@@ -241,8 +216,8 @@ export async function POST(req: Request) {
     return NextResponse.json({
       success: true,
       addedArtists: newArtistNames.length,
-      totalKnownArtists: existingKnown.length + newArtistNames.length,
-      message: `Deep imported ${newArtistNames.length} new artists from Spotify (${allCollected.length} total Spotify artists scanned across ${scannedSummary})`,
+      totalKnownArtists,
+      message: `Scored ${touched} artists from Spotify (${newArtistNames.length} new) across ${scannedSummary}`,
     });
   } catch (error: unknown) {
     console.error('Spotify fetch error:', error);
