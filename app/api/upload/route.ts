@@ -47,7 +47,11 @@ export async function POST(req: Request) {
     const source = fileType === 'endsong' ? 'spotify' : 'lastfm';
     const records: ImportRecord[] = [];
     const skippedFiles: string[] = [];
-    const uploadDir = path.join('/data/uploads', userId);
+    // Store uploads next to the database (the appdata folder mounted at
+    // /config on Unraid) so everything the app persists lives in one place.
+    const dbUrl = process.env.DATABASE_URL ?? 'file:/config/pde.db';
+    const dbDir = path.dirname(dbUrl.replace(/^file:/, ''));
+    const uploadDir = path.join(dbDir, 'uploads', userId);
     fs.mkdirSync(uploadDir, { recursive: true });
 
     for (const file of files) {
