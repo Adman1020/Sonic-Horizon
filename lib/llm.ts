@@ -119,7 +119,7 @@ async function callAnthropic(req: LLMRequest): Promise<LLMResult> {
 // Uses system_instruction field (required for Gemini 1.5+)
 // Endpoint: generativelanguage.googleapis.com/v1beta
 async function callGemini(req: LLMRequest): Promise<LLMResult> {
-  const model = req.model || 'gemini-2.5-flash';
+  const model = req.model || 'gemini-3.6-flash';
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${req.apiKey}`;
 
   const res = await fetch(url, {

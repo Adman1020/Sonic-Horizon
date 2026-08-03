@@ -91,9 +91,8 @@ const PROVIDER_META: Record<string, ProviderMeta> = {
       'Free tier: 15 RPM, 1M tokens/day (not available in EU/UK — use OpenRouter instead)',
     ],
     cheapModels: [
-      { id: 'gemini-2.5-flash', label: 'gemini-2.5-flash — free tier, latest & smartest', free: true },
-      { id: 'gemini-2.5-flash-lite', label: 'gemini-2.5-flash-lite — free tier, fastest', free: true },
-      { id: 'gemini-2.0-flash', label: 'gemini-2.0-flash — free tier, proven reliable', free: true },
+      { id: 'gemini-3.6-flash', label: 'gemini-3.6-flash — free tier, latest & smartest', free: true },
+      { id: 'gemini-3.1-flash-lite', label: 'gemini-3.1-flash-lite — free tier, fastest', free: true },
     ],
     keyLabel: 'Google AI Studio API Key',
     keyPlaceholder: 'AIzaSy...',
@@ -206,7 +205,7 @@ export default function Home() {
 
   // ── AI Provider state
   const [selectedProvider, setSelectedProvider] = useState('Google Gemini');
-  const [modelInput, setModelInput] = useState('gemini-2.0-flash');
+  const [modelInput, setModelInput] = useState('gemini-3.6-flash');
   const [apiKeyInput, setApiKeyInput] = useState('');
   const [keySaving, setKeySaving] = useState(false);
   const [keyStatus, setKeyStatus] = useState('');
