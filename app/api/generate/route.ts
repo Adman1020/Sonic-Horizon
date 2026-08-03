@@ -7,7 +7,13 @@ import { getValidSpotifyAccessToken, searchSpotifyTrack, searchSpotifyAlbumTrack
 import { rankSeeds, normalizeArtistName, isTasteFocus, TASTE_FOCUS_DEFAULT, isPoolEligible, isBaselineEligible, type TasteFocus } from '@/lib/artistScore';
 
 const SEED_LIMIT = 50;
-const EXCLUSION_LIST_LIMIT = 500;
+// Send the FULL exclusion baseline to the model. A fixed small cap (500) hid
+// thousands of known artists from the prompt, so the model naturally suggested
+// artists the user already listens to — and the code-side filter then deleted
+// them, returning a fraction of the requested quantity. Artist names are cheap
+// tokens; Gemini/OpenAI/Anthropic all have 200K+ contexts, so send everything
+// (capped defensively for small local models).
+const EXCLUSION_LIST_LIMIT = 10000;
 
 export async function POST(req: Request) {
   const userId = await getCurrentUserId();
@@ -110,7 +116,7 @@ OUTPUT SCHEMA (return exactly this JSON, no other text):
     const promptQuantity = Math.max(quantity + 10, Math.ceil(quantity * 1.5));
     const userPrompt = `Generate ${promptQuantity} ${format === 'tracks' ? 'track' : 'album'} recommendations. Return ONLY the JSON object, no other text.`;
 
-    console.log(`[generate] request qty=${quantity} promptQty=${promptQuantity} format=${format} obscurity=${obscurity} provider=${provider} model=${model ?? 'default'} baseline=${baselineArtists.length} pool=${poolArtists.length} focus=${focus}`);
+    console.log(`[generate] request qty=${quantity} promptQty=${promptQuantity} format=${format} obscurity=${obscurity} provider=${provider} model=${model ?? 'default'} baseline=${baselineArtists.length} pool=${poolArtists.length} focus=${focus} exclShown=${exclusionSample.length}/${excludedCount}`);
 
     const result = await generateDiscoveryPlaylist({
       provider: provider as ProviderType,
