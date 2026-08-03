@@ -73,9 +73,9 @@ export async function POST(req: Request) {
 
       try {
         if (format === 'albums') {
-          const albumUris = await searchSpotifyAlbumTracks(accessToken, artist, title);
-          if (albumUris.length > 0) {
-            resolvedUris.push(...albumUris);
+          const albumResult = await searchSpotifyAlbumTracks(accessToken, artist, title);
+          if (albumResult.uris.length > 0) {
+            resolvedUris.push(...albumResult.uris);
             resolvedCount++;
           } else {
             console.warn(`Sync: Could not find album on Spotify: "${artist} - ${title}"`);

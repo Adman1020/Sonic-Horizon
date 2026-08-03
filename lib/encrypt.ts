@@ -3,7 +3,8 @@ import crypto from 'crypto'
 const ALGORITHM = 'aes-256-gcm'
 
 function getKey(): Buffer {
-  const secret = process.env.ENCRYPTION_SECRET || 'fallback-secret-32-chars-min-!!!!'
+  const secret = process.env.ENCRYPTION_SECRET;
+  if (!secret) throw new Error('ENCRYPTION_SECRET environment variable is required.')
   // Ensure exactly 32 bytes for AES-256
   return Buffer.from(secret.padEnd(32, '!').slice(0, 32))
 }

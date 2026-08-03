@@ -9,18 +9,18 @@ services:
     volumes:
       - ./config:/config
       - ./uploads:/data/uploads
+      - db-data:/data/db
     environment:
       - NODE_ENV=production
-      - DATABASE_URL=file:/config/pde.db
-      # Generate a strong random secret: openssl rand -hex 32
-      - JWT_SECRET=change-me-to-a-long-random-secret
-      # Generate a strong random secret: openssl rand -hex 32
-      - ENCRYPTION_SECRET=change-me-to-another-random-secret
-      # Register a free API key at last.fm/api/account/create
-      - LASTFM_API_KEY=
-      # Register a Spotify app at developer.spotify.com/dashboard
-      - SPOTIFY_CLIENT_ID=
-      - SPOTIFY_CLIENT_SECRET=
-      # Must match exactly what you registered in Spotify dashboard
-      - SPOTIFY_REDIRECT_URI=http://localhost:8080/api/spotify/callback
+      - DATABASE_URL=file:/data/db/pde.db
+      - JWT_SECRET=${JWT_SECRET:?JWT_SECRET missing - add it to .env}
+      - ENCRYPTION_SECRET=${ENCRYPTION_SECRET:?ENCRYPTION_SECRET missing - add it to .env}
     restart: unless-stopped
+
+volumes:
+  # The SQLite DB lives on a named volume, NOT the bind-mounted ./config.
+  # The config mount sits on the Windows host (under OneDrive), and WAL-mode
+  # SQLite on that filesystem hits SQLITE_IOERR_SHORT_READ after large writes
+  # (uploads) and never recovers until restart. A named volume runs on the
+  # container VM's native filesystem, which fully supports WAL.
+  db-data:

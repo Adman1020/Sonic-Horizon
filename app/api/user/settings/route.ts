@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { getCurrentUserId } from '@/lib/auth';
+import { parseSpotifySources, serializeSpotifySources, DEFAULT_SPOTIFY_SOURCES } from '@/lib/spotifySources';
+import { isTasteFocus, TASTE_FOCUS_DEFAULT } from '@/lib/artistScore';
 
 export async function GET() {
   const userId = await getCurrentUserId();
@@ -18,16 +20,22 @@ export async function GET() {
     return NextResponse.json({
       username: user?.username,
       isAdmin: user?.isAdmin,
-      settings: settings ?? {
+      settings: settings ? {
+        ...settings,
+        spotifySources: parseSpotifySources(settings.spotifySources),
+        tasteFocus: isTasteFocus(settings.tasteFocus) ? settings.tasteFocus : TASTE_FOCUS_DEFAULT,
+      } : {
         obscurityLevel: 3,
         outputFormat: 'tracks',
         recommendationLimit: 20,
-        requestsPerMinute: 0,
+        requestsPerMinute: 5,
         spotifyPlaylistPublic: true,
         scheduleMode: 'manual',
         theme: 'analog-hifi',
         lastFmUsername: null,
         spotifyAccessToken: null,
+        spotifySources: [...DEFAULT_SPOTIFY_SOURCES],
+        tasteFocus: TASTE_FOCUS_DEFAULT,
       },
       historyCount,
       knownArtistCount,
@@ -47,7 +55,7 @@ export async function PUT(req: Request) {
 
   try {
     const body = await req.json();
-    const { obscurityLevel, outputFormat, recommendationLimit, requestsPerMinute, spotifyPlaylistPublic, scheduleMode, lastFmUsername } = body;
+    const { obscurityLevel, outputFormat, recommendationLimit, requestsPerMinute, spotifyPlaylistPublic, scheduleMode, lastFmUsername, spotifySources, tasteFocus } = body;
 
     const now = new Date();
     const settings = await prisma.settings.upsert({
@@ -60,6 +68,8 @@ export async function PUT(req: Request) {
         ...(spotifyPlaylistPublic !== undefined && { spotifyPlaylistPublic }),
         ...(scheduleMode !== undefined && { scheduleMode }),
         ...(lastFmUsername !== undefined && { lastFmUsername }),
+        ...(spotifySources !== undefined && { spotifySources: serializeSpotifySources(spotifySources) }),
+        ...(tasteFocus !== undefined && isTasteFocus(tasteFocus) && { tasteFocus }),
         updatedAt: now,
       },
       create: {
@@ -67,10 +77,12 @@ export async function PUT(req: Request) {
         obscurityLevel: obscurityLevel ?? 3,
         outputFormat: outputFormat ?? 'tracks',
         recommendationLimit: recommendationLimit ?? 20,
-        requestsPerMinute: requestsPerMinute ?? 0,
+        requestsPerMinute: requestsPerMinute ?? 5,
         spotifyPlaylistPublic: spotifyPlaylistPublic ?? true,
         scheduleMode: scheduleMode ?? 'manual',
         lastFmUsername: lastFmUsername ?? null,
+        spotifySources: spotifySources !== undefined ? serializeSpotifySources(spotifySources) : 'all',
+        tasteFocus: tasteFocus !== undefined && isTasteFocus(tasteFocus) ? tasteFocus : TASTE_FOCUS_DEFAULT,
         createdAt: now,
         updatedAt: now,
       },

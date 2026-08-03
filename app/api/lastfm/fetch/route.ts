@@ -2,16 +2,22 @@ import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { getCurrentUserId } from '@/lib/auth';
 import { getDecryptedKey } from '@/lib/keys';
+import { applySignalsToArtists } from '@/lib/artistScoreDb';
 
 const LASTFM_BASE = 'https://ws.audioscrobbler.com/2.0/';
+// The Last.fm API caps `limit` at 1000 per page but does NOT cap the total —
+// you can page through the whole chart. We import up to MAX_ARTISTS so the
+// baseline covers deep library artists while the seed pool still picks the
+// top ~50 by score (Last.fm returns artists ranked by scrobbles).
+const LASTFM_PAGE_LIMIT = 1000;
+const LASTFM_MAX_ARTISTS = 5000;
 
 async function fetchAllTopArtists(username: string, apiKey: string): Promise<{ name: string; playcount: number }[]> {
   const artists: { name: string; playcount: number }[] = [];
   let page = 1;
-  const limit = 200;
 
   while (true) {
-    const url = `${LASTFM_BASE}?method=user.gettopartists&user=${encodeURIComponent(username)}&api_key=${apiKey}&format=json&limit=${limit}&page=${page}`;
+    const url = `${LASTFM_BASE}?method=user.gettopartists&user=${encodeURIComponent(username)}&api_key=${apiKey}&format=json&limit=${LASTFM_PAGE_LIMIT}&page=${page}`;
     const res = await fetch(url);
     if (!res.ok) throw new Error(`Last.fm API error: ${res.status}`);
     const data = await res.json();
@@ -26,7 +32,7 @@ async function fetchAllTopArtists(username: string, apiKey: string): Promise<{ n
     }
 
     const totalPages = parseInt(data.topartists['@attr']?.totalPages ?? '1', 10);
-    if (page >= totalPages || page >= 5) break; // cap at 1000 artists max
+    if (page >= totalPages || artists.length >= LASTFM_MAX_ARTISTS) break;
     page++;
   }
 
@@ -70,43 +76,30 @@ export async function POST(req: Request) {
         obscurityLevel: 3,
         outputFormat: 'tracks',
         recommendationLimit: 20,
+        requestsPerMinute: 5,
         scheduleMode: 'manual',
         createdAt: now,
         updatedAt: now,
       },
     });
 
-    // Upsert all artists into KnownArtist table (the exclusion list)
-    let added = 0;
+    // Record every artist as a strong "lastfmTop" signal in the scored pool.
+    // No synthetic StreamingHistory rows are created — that history is what
+    // the scoring pipeline uses for real plays, so top-artist imports must not
+    // pollute it.
+    const artistSignals = new Map<string, Record<string, number>>();
     for (const artist of artists) {
-      try {
-        await prisma.knownArtist.upsert({
-          where: { userId_artistName: { userId, artistName: artist.name } },
-          update: {},
-          create: { userId, artistName: artist.name, addedAt: now },
-        });
-
-        // Also add to StreamingHistory as a synthetic entry for LLM context
-        await prisma.streamingHistory.create({
-          data: {
-            userId,
-            source: 'lastfm',
-            artistName: artist.name,
-            trackName: '[Top Artist]',
-            playedAt: now,
-          },
-        });
-        added++;
-      } catch {
-        // Skip duplicates
-      }
+      artistSignals.set(artist.name, { lastfmTop: (artistSignals.get(artist.name)?.lastfmTop ?? 0) + 1 });
     }
+    const touched = await applySignalsToArtists(userId, artistSignals, now);
+    const totalKnown = await prisma.knownArtist.count({ where: { userId } });
 
     return NextResponse.json({
       success: true,
       username: username.trim(),
-      artistCount: added,
-      message: `Imported ${added} artists from Last.fm`,
+      artistCount: touched,
+      totalKnownArtists: totalKnown,
+      message: `Imported ${touched} artists from Last.fm into the recommendation pool`,
     });
   } catch (error: unknown) {
     console.error('Last.fm fetch error:', error);

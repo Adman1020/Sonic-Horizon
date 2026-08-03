@@ -181,7 +181,7 @@ export async function searchSpotifyTrack(accessToken: string, artistName: string
   return null;
 }
 
-export async function searchSpotifyAlbumTracks(accessToken: string, artistName: string, albumName: string): Promise<string[]> {
+export async function searchSpotifyAlbumTracks(accessToken: string, artistName: string, albumName: string): Promise<{ albumId: string | null; uris: string[] }> {
   const cleanedAlbum = cleanTitle(albumName);
   const artist = artistName.trim();
 
@@ -208,15 +208,18 @@ export async function searchSpotifyAlbumTracks(accessToken: string, artistName: 
     }
   }
 
-  if (!album?.id) return [];
+  if (!album?.id) return { albumId: null, uris: [] };
 
   // Fetch all tracks from the album
   const tracksRes = await fetch(`https://api.spotify.com/v1/albums/${album.id}/tracks?limit=50`, {
     headers: { Authorization: `Bearer ${accessToken}` },
   });
-  if (!tracksRes.ok) return [];
+  if (!tracksRes.ok) return { albumId: album.id, uris: [] };
   const tracksData = await tracksRes.json();
-  return (tracksData.items ?? []).map((t: { uri: string }) => t.uri).filter(Boolean);
+  return {
+    albumId: album.id,
+    uris: (tracksData.items ?? []).map((t: { uri: string }) => t.uri).filter(Boolean),
+  };
 }
 
 export async function uploadPlaylistCover(accessToken: string, playlistId: string, imageFileName: string) {
@@ -384,20 +387,63 @@ export async function createOrUpdatePlaylist(accessToken: string, userId: string
   return playlist;
 }
 
-export function parseEndsongJson(fileContent: string) {
+export interface ImportRecord {
+  artistName: string;
+  trackName: string;
+  albumName?: string | null;
+  playedAt: Date;
+}
+
+// Parses a Spotify streaming-history JSON file. Handles both export formats:
+// - Extended history (endsong_*.json / Streaming_History_Audio_*.json):
+//   { ts, master_metadata_track_name, master_metadata_album_artist_name,
+//     master_metadata_album_album_name, ... }
+// - Basic history (StreamingHistory*.json):
+//   { endTime, artistName, trackName, msPlayed }
+// Each file is an array of play events. Podcast episodes and rows missing a
+// track or artist are skipped.
+export function parseEndsongJson(fileContent: string): ImportRecord[] {
+  let data: unknown;
   try {
-    const data = JSON.parse(fileContent);
-    // endsong.json format: { ts, master_metadata_track_name, master_metadata_album_artist_name, ... }
-    return data.filter((item: any) => item.master_metadata_track_name && item.master_metadata_album_artist_name)
-      .map((item: any) => ({
-        artistName: item.master_metadata_album_artist_name,
-        trackName: item.master_metadata_track_name,
-        albumName: item.master_metadata_album_album_name,
-        playedAt: new Date(item.ts),
-      }));
-  } catch (err) {
-    throw new Error("Invalid endsong.json format");
+    data = JSON.parse(fileContent);
+  } catch {
+    throw new Error('Invalid JSON — this does not look like a Spotify streaming history file.');
   }
+
+  const items = Array.isArray(data) ? data : [data];
+  const records: ImportRecord[] = [];
+
+  for (const item of items) {
+    if (!item || typeof item !== 'object') continue;
+    const rec = item as Record<string, unknown>;
+
+    let track = rec.master_metadata_track_name;
+    let artist = rec.master_metadata_album_artist_name;
+    let album = rec.master_metadata_album_album_name;
+    let ts = rec.ts;
+
+    // Basic export uses endTime/artistName/trackName and has no album column.
+    if (typeof rec.trackName === 'string' && typeof rec.artistName === 'string') {
+      if (track == null || typeof track !== 'string') track = rec.trackName;
+      if (artist == null || typeof artist !== 'string') artist = rec.artistName;
+      if (ts == null) ts = rec.endTime;
+    }
+
+    if (typeof track !== 'string' || !track.trim()) continue;
+    if (typeof artist !== 'string' || !artist.trim()) continue;
+
+    const playedAt = typeof ts === 'string' ? new Date(ts) : new Date(NaN);
+    if (Number.isNaN(playedAt.getTime())) continue;
+
+    records.push({
+      artistName: artist.trim(),
+      trackName: track.trim(),
+      albumName: typeof album === 'string' && album.trim() ? album.trim() : null,
+      playedAt,
+    });
+  }
+
+  return records;
 }
 
 export function resolveSpotifyRedirectUri(req: { headers: { get(name: string): string | null }; nextUrl: { host: string; protocol: string } }, userBaseUrl: string | null): string {
