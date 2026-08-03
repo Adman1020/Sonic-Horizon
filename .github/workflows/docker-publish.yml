@@ -5,6 +5,7 @@ on:
     branches: ['main', 'master']
   pull_request:
     branches: ['main', 'master']
+  workflow_dispatch:
 
 env:
   REGISTRY: ghcr.io
@@ -55,12 +56,13 @@ jobs:
           script: |
             const packageName = process.env.PACKAGE_NAME.split('/')[1].toLowerCase();
             try {
-              await github.rest.packages.updatePackageVisibilityForUser({
+              await github.request('PUT /user/packages/{package_type}/{package_name}/visibility', {
                 package_type: 'container',
                 package_name: packageName,
                 visibility: 'public',
+                headers: { 'X-GitHub-Api-Version': '2022-11-28' },
               });
               console.log(`Set GHCR package ${packageName} visibility to public`);
             } catch (error) {
-              console.log(`Could not set package visibility (check it manually): ${error.message}`);
+              console.log(`Could not set package visibility (check it manually): ${error.status} ${error.message}`);
             }
