@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 import { jwtVerify } from 'jose';
+import { prisma } from '@/lib/prisma';
 
 const secretKey = process.env.JWT_SECRET;
 const key = secretKey ? new TextEncoder().encode(secretKey) : null;
@@ -10,7 +11,7 @@ function getJwtKey(): Uint8Array {
   return key;
 }
 
-export async function middleware(request: NextRequest) {
+export async function proxy(request: NextRequest) {
   const token = request.cookies.get('sonic_horizon_token')?.value;
   const { pathname } = request.nextUrl;
 
@@ -29,7 +30,34 @@ export async function middleware(request: NextRequest) {
 
   try {
     const { payload } = await jwtVerify(token, getJwtKey());
-    const isAdmin = Boolean(payload.isAdmin);
+    const userId = payload.userId as string | undefined;
+    if (!userId) return makeRedirect('/login');
+
+    // Check the session against the database: the token must match the
+    // user's current tokenVersion (revoked on password change/reset) and
+    // the user must still exist (revoked on deletion).
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, isAdmin: true, tokenVersion: true, mustChangePassword: true },
+    });
+    if (!user || user.tokenVersion !== ((payload.tokenVersion as number | undefined) ?? 0)) {
+      return makeRedirect('/login');
+    }
+
+    // Users flagged mustChangePassword are locked down until they set a new
+    // password. Pages redirect to /change-password; API routes (other than
+    // /api/auth, which the matcher already excludes) return 403.
+    if (user.mustChangePassword) {
+      if (pathname.startsWith('/api')) {
+        return NextResponse.json({ error: 'Password change required' }, { status: 403 });
+      }
+      if (pathname !== '/change-password') {
+        return makeRedirect('/change-password?forced=1');
+      }
+      return NextResponse.next();
+    }
+
+    const isAdmin = Boolean(user.isAdmin);
 
     if (isAdmin && pathname === '/') {
       return makeRedirect('/admin');

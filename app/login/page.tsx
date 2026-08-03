@@ -43,7 +43,9 @@ export default function Login() {
         throw new Error(data.error || 'Authentication failed');
       }
       
-      if (isSetupMode || data.isAdmin) {
+      if (data.mustChangePassword) {
+        router.push('/change-password');
+      } else if (isSetupMode || data.isAdmin) {
         router.push('/admin');
       } else {
         router.push('/');
@@ -103,7 +105,7 @@ export default function Login() {
             <input 
               type="password" 
               required
-              minLength={6}
+              minLength={12}
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               autoCapitalize="none"

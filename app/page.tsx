@@ -593,6 +593,7 @@ OUTPUT JSON SCHEMA:
               </button>
             </div>
             <span className="text-xs text-analog-text-muted">{user?.username}</span>
+            <a href="/change-password" className="text-xs text-analog-text-muted hover:text-white transition-colors">Change password</a>
             <button onClick={handleLogout} className="text-xs text-analog-text-muted hover:text-red-400 transition-colors">Logout</button>
           </div>
         </div>

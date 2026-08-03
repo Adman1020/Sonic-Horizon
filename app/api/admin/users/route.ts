@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { getCurrentUser } from '@/lib/auth';
 import { hashPassword } from '@/lib/auth';
+import { MIN_PASSWORD_LENGTH } from '@/lib/auth';
 
 export async function GET() {
   const currentUser = await getCurrentUser();
@@ -24,8 +25,8 @@ export async function POST(req: Request) {
 
   try {
     const { username, password } = await req.json();
-    if (!username || !password || password.length < 6) {
-      return NextResponse.json({ error: 'Valid username and password (min 6 chars) required' }, { status: 400 });
+    if (!username || !password || password.length < MIN_PASSWORD_LENGTH) {
+      return NextResponse.json({ error: `Valid username and password (min ${MIN_PASSWORD_LENGTH} chars) required` }, { status: 400 });
     }
 
     const existing = await prisma.user.findUnique({ where: { username } });
@@ -34,7 +35,7 @@ export async function POST(req: Request) {
     const passwordHash = await hashPassword(password);
     const now = new Date();
     const user = await prisma.user.create({
-      data: { username, passwordHash, isAdmin: false, createdAt: now, updatedAt: now },
+      data: { username, passwordHash, isAdmin: false, mustChangePassword: true, createdAt: now, updatedAt: now },
       select: { id: true, username: true, isAdmin: true, createdAt: true },
     });
 

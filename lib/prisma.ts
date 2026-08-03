@@ -29,6 +29,8 @@ function initializeSchema(db: Database): void {
       "username" TEXT NOT NULL UNIQUE,
       "passwordHash" TEXT NOT NULL,
       "isAdmin" BOOLEAN NOT NULL DEFAULT false,
+      "tokenVersion" INTEGER NOT NULL DEFAULT 0,
+      "mustChangePassword" BOOLEAN NOT NULL DEFAULT 1,
       "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
       "updatedAt" DATETIME NOT NULL
     );
@@ -97,6 +99,12 @@ function initializeSchema(db: Database): void {
   } catch { /* Column already exists */ }
   try {
     db.exec(`ALTER TABLE "Settings" ADD COLUMN "spotifySources" TEXT NOT NULL DEFAULT 'all';`);
+  } catch { /* Column already exists */ }
+  try {
+    db.exec(`ALTER TABLE "User" ADD COLUMN "tokenVersion" INTEGER NOT NULL DEFAULT 0;`);
+  } catch { /* Column already exists */ }
+  try {
+    db.exec(`ALTER TABLE "User" ADD COLUMN "mustChangePassword" BOOLEAN NOT NULL DEFAULT 1;`);
   } catch { /* Column already exists */ }
   db.exec(`COMMIT;`);
 }

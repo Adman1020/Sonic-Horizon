@@ -70,8 +70,8 @@ export default function AdminPage() {
 
   const handlePasswordReset = async (id: string) => {
     const pass = resetPasswords[id];
-    if (!pass || pass.length < 6) {
-      setResetStatus(s => ({ ...s, [id]: 'Min 6 characters' }));
+    if (!pass || pass.length < 12) {
+      setResetStatus(s => ({ ...s, [id]: 'Min 12 characters' }));
       return;
     }
     try {
@@ -82,7 +82,7 @@ export default function AdminPage() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
-      setResetStatus(s => ({ ...s, [id]: '✓ Password reset' }));
+      setResetStatus(s => ({ ...s, [id]: '✓ Reset — user must change on next login' }));
       setResetPasswords(p => ({ ...p, [id]: '' }));
     } catch (e: unknown) {
       setResetStatus(s => ({ ...s, [id]: `Error: ${e instanceof Error ? e.message : '?'}` }));
@@ -103,12 +103,17 @@ export default function AdminPage() {
             <span className="font-bold text-white">Sonic Horizon</span>
             <span className="text-analog-text-muted text-xs">Admin Panel</span>
           </div>
-          <button
-            onClick={handleLogout}
-            className="text-xs text-analog-text-muted hover:text-red-400 transition-colors"
-          >
-            Logout
-          </button>
+          <div className="flex items-center gap-4">
+            <a href="/change-password" className="text-xs text-analog-text-muted hover:text-white transition-colors">
+              Change password
+            </a>
+            <button
+              onClick={handleLogout}
+              className="text-xs text-analog-text-muted hover:text-red-400 transition-colors"
+            >
+              Logout
+            </button>
+          </div>
         </div>
       </header>
 
@@ -118,7 +123,7 @@ export default function AdminPage() {
         <section className="bg-analog-card border border-analog-border rounded-xl overflow-hidden shadow-xl">
           <div className="px-6 py-5 border-b border-analog-border">
             <h2 className="font-semibold text-white">Create User</h2>
-            <p className="text-xs text-analog-text-muted mt-0.5">New users can log in immediately</p>
+            <p className="text-xs text-analog-text-muted mt-0.5">New users log in with this password, then must set their own on first login</p>
           </div>
           <form onSubmit={handleCreate} className="p-6 flex flex-wrap gap-3 items-end">
             <div className="flex-1 min-w-36">
@@ -130,9 +135,9 @@ export default function AdminPage() {
               />
             </div>
             <div className="flex-1 min-w-36">
-              <label className="block text-xs text-analog-text-muted mb-1.5">Password (min 6)</label>
+              <label className="block text-xs text-analog-text-muted mb-1.5">Password (min 12)</label>
               <input
-                type="password" required minLength={6} value={newPassword}
+                type="password" required minLength={12} value={newPassword}
                 onChange={e => setNewPassword(e.target.value)}
                 className="w-full bg-analog-bg border border-analog-border rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-analog-accent transition-colors"
               />
