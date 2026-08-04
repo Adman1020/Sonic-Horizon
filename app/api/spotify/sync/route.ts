@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { getCurrentUserId } from '@/lib/auth';
-import { getValidSpotifyAccessToken, searchSpotifyTrack, searchSpotifyAlbumTracks, createOrUpdatePlaylist, findUserPlaylist, getAllPlaylistItemUris } from '@/lib/spotify';
+import { getValidSpotifyAccessToken, searchSpotifyTrack, searchSpotifyAlbumTracks, searchArtistTopTrack, createOrUpdatePlaylist, findUserPlaylist, getAllPlaylistItemUris } from '@/lib/spotify';
 
 const CURRENT_PLAYLIST = 'Sonic Horizon';
 const ARCHIVE_PLAYLIST = 'Sonic Horizon Archive';
@@ -78,7 +78,18 @@ export async function POST(req: Request) {
             resolvedUris.push(...albumResult.uris);
             resolvedCount++;
           } else {
-            console.warn(`Sync: Could not find album on Spotify: "${artist} - ${title}"`);
+            // Album title likely hallucinated — fall back to a real,
+            // artist-verified song so the rec still lands in the playlist
+            // (and the preview never plays a different artist).
+            const track = await searchSpotifyTrack(accessToken, artist, title);
+            const fallbackTrack = track?.uri ? track : await searchArtistTopTrack(accessToken, artist);
+            if (fallbackTrack?.uri) {
+              resolvedUris.push(fallbackTrack.uri);
+              resolvedCount++;
+              console.warn(`Sync: Album not found, fell back to track for: "${artist} - ${title}"`);
+            } else {
+              console.warn(`Sync: Could not find album or track on Spotify: "${artist} - ${title}"`);
+            }
           }
         } else {
           const track = await searchSpotifyTrack(accessToken, artist, title);

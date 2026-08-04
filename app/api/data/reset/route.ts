@@ -63,6 +63,8 @@ export async function POST(req: Request) {
     }
 
     const finalCount = await prisma.knownArtist.count({ where: { userId } });
+    const removedArtistsLabel = toDelete.length > 0 ? `, removed ${toDelete.length} artists entirely` : '';
+    const remainingLabel = `, ${finalCount} artists remain (from other sources)`;
 
     return NextResponse.json({
       success: true,
@@ -72,8 +74,8 @@ export async function POST(req: Request) {
       removedArtists: toDelete.length,
       remainingArtists: finalCount,
       message: source === 'spotify'
-        ? `Cleared Spotify artists (${deletedHistory.count} plays, ${droppedSignals} signal records removed)`
-        : `Cleared Last.fm artists (${deletedHistory.count} plays, ${droppedSignals} signal records removed)`,
+        ? `Cleared Spotify data (${deletedHistory.count} plays, ${droppedSignals} signal records removed${removedArtistsLabel}${remainingLabel})`
+        : `Cleared Last.fm data (${deletedHistory.count} plays, ${droppedSignals} signal records removed${removedArtistsLabel}${remainingLabel})`,
     });
   } catch (error) {
     console.error('Reset error:', error);

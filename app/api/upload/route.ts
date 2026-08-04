@@ -131,6 +131,7 @@ export async function POST(req: Request) {
       imported,
       uniqueArtists: newArtists.length,
       files: files.length,
+      skipped: skippedFiles,
       message: `Imported ${imported} plays from ${newArtists.length} new artists across ${files.length} file(s).${suffix}`,
     });
   } catch (error: unknown) {
