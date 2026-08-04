@@ -140,71 +140,142 @@ function cleanTitle(title: string) {
   return title.replace(/\s*\([^)]*\)/g, '').replace(/\s*-[^-]*$/g, '').trim();
 }
 
+function normalizeName(name: string): string {
+  return (name ?? '').trim().toLowerCase().replace(/\s+/g, ' ').replace(/[^a-z0-9&' ]/g, '');
+}
+
+// Loose artist-name equivalence: exact match, or a substring match either
+// direction ("The Band" ↔ "Band"). Never accepts an unrelated artist.
+function artistMatches(actual: string, expected: string): boolean {
+  const a = normalizeName(actual);
+  const b = normalizeName(expected);
+  if (!a || !b) return false;
+  if (a === b) return true;
+  return a.includes(b) || b.includes(a);
+}
+
+function trackTitleMatches(actual: string, expected: string): boolean {
+  const a = normalizeName(actual);
+  const b = normalizeName(expected);
+  if (!a || !b) return false;
+  return a === b || a.includes(b) || b.includes(a);
+}
+
+// From a list of search hits, keep only tracks by the expected artist, prefer
+// an exact title match, then return the most popular of the survivors. Returns
+// null when no hit belongs to the artist — NEVER a different artist's track.
+function pickBestTrack(items: any[], artist: string, trackTitle: string): any | null {
+  if (!items?.length) return null;
+  const withArtist = items.filter((t: any) => t.artists?.some((a: any) => artistMatches(a.name, artist)));
+  if (withArtist.length === 0) return null;
+  const titleMatches = withArtist.filter((t: any) => trackTitleMatches(t.name, trackTitle));
+  const pool = titleMatches.length > 0 ? titleMatches : withArtist;
+  return [...pool].sort((a: any, b: any) => (b.popularity ?? 0) - (a.popularity ?? 0))[0] ?? null;
+}
+
 export async function searchSpotifyTrack(accessToken: string, artistName: string, trackName: string) {
   const cleanedTrack = cleanTitle(trackName);
   const artist = artistName.trim();
+  if (!artist || !cleanedTrack) return null;
 
-  // 1. Strict field query
+  // 1. Strict field query — result must belong to the artist.
   const query = encodeURIComponent(`artist:${artist} track:${cleanedTrack}`);
-  let response = await fetch(`https://api.spotify.com/v1/search?q=${query}&type=track&limit=1`, {
+  let response = await fetch(`https://api.spotify.com/v1/search?q=${query}&type=track&limit=10`, {
     headers: { Authorization: `Bearer ${accessToken}` },
   });
   if (response.ok) {
     const data = await response.json();
-    if (data.tracks?.items?.[0]) return data.tracks.items[0];
-  }
-
-  // 2. Simple text fallback query
-  const fallbackQuery = encodeURIComponent(`${artist} ${cleanedTrack}`);
-  response = await fetch(`https://api.spotify.com/v1/search?q=${fallbackQuery}&type=track&limit=1`, {
-    headers: { Authorization: `Bearer ${accessToken}` },
-  });
-  if (response.ok) {
-    const data = await response.json();
-    if (data.tracks?.items?.[0]) return data.tracks.items[0];
-  }
-
-  // 3. Track name only fallback
-  const trackOnlyQuery = encodeURIComponent(cleanedTrack);
-  response = await fetch(`https://api.spotify.com/v1/search?q=${trackOnlyQuery}&type=track&limit=5`, {
-    headers: { Authorization: `Bearer ${accessToken}` },
-  });
-  if (response.ok) {
-    const data = await response.json();
-    const match = data.tracks?.items?.find((t: any) =>
-      t.artists?.some((a: any) => a.name.toLowerCase().includes(artist.toLowerCase()))
-    );
+    const match = pickBestTrack(data.tracks?.items ?? [], artist, cleanedTrack);
     if (match) return match;
-    return data.tracks?.items?.[0] || null;
+  }
+
+  // 2. Simple text fallback query — artist must still be verified.
+  const fallbackQuery = encodeURIComponent(`${artist} ${cleanedTrack}`);
+  response = await fetch(`https://api.spotify.com/v1/search?q=${fallbackQuery}&type=track&limit=10`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  if (response.ok) {
+    const data = await response.json();
+    const match = pickBestTrack(data.tracks?.items ?? [], artist, cleanedTrack);
+    if (match) return match;
+  }
+
+  // 3. Track-name-only query. Picks the best artist-verified match, or null.
+  // Returning a top hit from a different artist is what made preview samples
+  // show a completely different song — that must never happen.
+  const trackOnlyQuery = encodeURIComponent(cleanedTrack);
+  response = await fetch(`https://api.spotify.com/v1/search?q=${trackOnlyQuery}&type=track&limit=10`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  if (response.ok) {
+    const data = await response.json();
+    const match = pickBestTrack(data.tracks?.items ?? [], artist, cleanedTrack);
+    if (match) return match;
   }
 
   return null;
 }
 
+// A real, verified song by the artist (used when a specific track or album
+// can't be resolved). Prefers the artist's most popular track.
+export async function searchArtistTopTrack(accessToken: string, artistName: string) {
+  const artist = artistName.trim();
+  if (!artist) return null;
+  const query = encodeURIComponent(`artist:${artist}`);
+  const response = await fetch(`https://api.spotify.com/v1/search?q=${query}&type=track&limit=10`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  if (!response.ok) return null;
+  const data = await response.json();
+  const items = (data.tracks?.items ?? []).filter((t: any) =>
+    t.artists?.some((a: any) => artistMatches(a.name, artist))
+  );
+  if (items.length === 0) return null;
+  return [...items].sort((a: any, b: any) => (b.popularity ?? 0) - (a.popularity ?? 0))[0];
+}
+
 export async function searchSpotifyAlbumTracks(accessToken: string, artistName: string, albumName: string): Promise<{ albumId: string | null; uris: string[] }> {
   const cleanedAlbum = cleanTitle(albumName);
   const artist = artistName.trim();
+  if (!artist || !cleanedAlbum) return { albumId: null, uris: [] };
 
-  // 1. Strict album query
+  const albumBelongsToArtist = (a: any): boolean =>
+    !!a?.artists?.some((ar: any) => artistMatches(ar.name, artist));
+
+  // 1. Strict album query, verified against the artist.
   const query = encodeURIComponent(`artist:${artist} album:${cleanedAlbum}`);
-  let albumRes = await fetch(`https://api.spotify.com/v1/search?q=${query}&type=album&limit=1`, {
+  let albumRes = await fetch(`https://api.spotify.com/v1/search?q=${query}&type=album&limit=10`, {
     headers: { Authorization: `Bearer ${accessToken}` },
   });
   let album = null;
   if (albumRes.ok) {
     const data = await albumRes.json();
-    album = data.albums?.items?.[0];
+    album = (data.albums?.items ?? []).find(albumBelongsToArtist) ?? null;
   }
 
-  // 2. Simple fallback album query
+  // 2. Simple fallback album query, verified against the artist.
   if (!album) {
     const fallbackQuery = encodeURIComponent(`${artist} ${cleanedAlbum}`);
-    albumRes = await fetch(`https://api.spotify.com/v1/search?q=${fallbackQuery}&type=album&limit=1`, {
+    albumRes = await fetch(`https://api.spotify.com/v1/search?q=${fallbackQuery}&type=album&limit=10`, {
       headers: { Authorization: `Bearer ${accessToken}` },
     });
     if (albumRes.ok) {
       const data = await albumRes.json();
-      album = data.albums?.items?.[0];
+      album = (data.albums?.items ?? []).find(albumBelongsToArtist) ?? null;
+    }
+  }
+
+  // 3. Album-name-only query, verified against the artist. LLMs frequently
+  // hallucinate album titles (wrong word order, extra/missing words), so search
+  // the raw title and pick the first result whose primary artist matches.
+  if (!album && cleanedAlbum) {
+    const nameOnlyQuery = encodeURIComponent(cleanedAlbum);
+    albumRes = await fetch(`https://api.spotify.com/v1/search?q=${nameOnlyQuery}&type=album&limit=10`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    if (albumRes.ok) {
+      const data = await albumRes.json();
+      album = (data.albums?.items ?? []).find(albumBelongsToArtist) ?? null;
     }
   }
 
@@ -253,7 +324,7 @@ export async function uploadPlaylistCover(accessToken: string, playlistId: strin
   }
 }
 
-export async function findUserPlaylist(accessToken: string, playlistName: string): Promise<{ id: string; name: string; external_urls?: { spotify?: string } } | null> {
+export async function findUserPlaylist(accessToken: string, playlistName: string): Promise<{ id: string; name: string; public?: boolean | null; external_urls?: { spotify?: string } } | null> {
   let nextUrl: string | null = 'https://api.spotify.com/v1/me/playlists?limit=50';
 
   while (nextUrl) {
@@ -317,6 +388,23 @@ export async function createOrUpdatePlaylist(accessToken: string, userId: string
 
   if (!playlist?.id) {
     throw new Error(`Could not obtain valid playlist object for "${playlistName}"`);
+  }
+
+  // Keep playlist visibility in sync with the current setting on every push.
+  // A playlist created public (e.g. before the user flipped the toggle) stays
+  // public on Spotify otherwise — the toggle must win on the next push. This
+  // runs for both the main and the archive playlist (both call this function).
+  if (playlist.public !== isPublic) {
+    const visRes = await fetch(`https://api.spotify.com/v1/playlists/${playlist.id}`, {
+      method: 'PUT',
+      headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ public: isPublic }),
+    });
+    if (!visRes.ok) {
+      console.error(`Failed to update visibility for "${playlistName}" (HTTP ${visRes.status}):`, await visRes.text());
+    } else {
+      console.log(`Updated "${playlistName}" visibility → ${isPublic ? 'public' : 'private'}`);
+    }
   }
 
   // Upload custom cover artwork

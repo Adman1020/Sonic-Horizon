@@ -2,7 +2,8 @@ import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { getCurrentUserId } from '@/lib/auth';
 import { parseSpotifySources, serializeSpotifySources, DEFAULT_SPOTIFY_SOURCES } from '@/lib/spotifySources';
-import { isTasteFocus, TASTE_FOCUS_DEFAULT } from '@/lib/artistScore';
+import { isTasteFocus, TASTE_FOCUS_DEFAULT, parseGenres, isGenreLike } from '@/lib/artistScore';
+import { isDiscoveryMode, DISCOVERY_MODE_DEFAULT } from '@/lib/discovery';
 
 export async function GET() {
   const userId = await getCurrentUserId();
@@ -24,6 +25,10 @@ export async function GET() {
         ...settings,
         spotifySources: parseSpotifySources(settings.spotifySources),
         tasteFocus: isTasteFocus(settings.tasteFocus) ? settings.tasteFocus : TASTE_FOCUS_DEFAULT,
+        genres: parseGenres(settings.genres),
+        discoveryMode: isDiscoveryMode(settings.discoveryMode) ? settings.discoveryMode : DISCOVERY_MODE_DEFAULT,
+        branchTheme: settings.branchTheme ?? null,
+        rabbitHoleArtist: settings.rabbitHoleArtist ?? null,
       } : {
         obscurityLevel: 3,
         outputFormat: 'tracks',
@@ -36,6 +41,10 @@ export async function GET() {
         spotifyAccessToken: null,
         spotifySources: [...DEFAULT_SPOTIFY_SOURCES],
         tasteFocus: TASTE_FOCUS_DEFAULT,
+        genres: [],
+        discoveryMode: DISCOVERY_MODE_DEFAULT,
+        branchTheme: null,
+        rabbitHoleArtist: null,
       },
       historyCount,
       knownArtistCount,
@@ -55,7 +64,12 @@ export async function PUT(req: Request) {
 
   try {
     const body = await req.json();
-    const { obscurityLevel, outputFormat, recommendationLimit, requestsPerMinute, spotifyPlaylistPublic, scheduleMode, lastFmUsername, spotifySources, tasteFocus } = body;
+    const { obscurityLevel, outputFormat, recommendationLimit, requestsPerMinute, spotifyPlaylistPublic, scheduleMode, lastFmUsername, spotifySources, tasteFocus, genres, discoveryMode, branchTheme, rabbitHoleArtist } = body;
+
+    const cleanGenres = (g: unknown): string[] | undefined => {
+      if (!Array.isArray(g)) return undefined;
+      return [...new Set(g.filter((item): item is string => typeof item === 'string' && isGenreLike(item)))];
+    };
 
     const now = new Date();
     const settings = await prisma.settings.upsert({
@@ -70,6 +84,10 @@ export async function PUT(req: Request) {
         ...(lastFmUsername !== undefined && { lastFmUsername }),
         ...(spotifySources !== undefined && { spotifySources: serializeSpotifySources(spotifySources) }),
         ...(tasteFocus !== undefined && isTasteFocus(tasteFocus) && { tasteFocus }),
+        ...(cleanGenres(genres) !== undefined && { genres: JSON.stringify(cleanGenres(genres)) }),
+        ...(isDiscoveryMode(discoveryMode) && { discoveryMode }),
+        ...(branchTheme !== undefined && { branchTheme }),
+        ...(rabbitHoleArtist !== undefined && { rabbitHoleArtist }),
         updatedAt: now,
       },
       create: {
@@ -83,6 +101,10 @@ export async function PUT(req: Request) {
         lastFmUsername: lastFmUsername ?? null,
         spotifySources: spotifySources !== undefined ? serializeSpotifySources(spotifySources) : 'all',
         tasteFocus: tasteFocus !== undefined && isTasteFocus(tasteFocus) ? tasteFocus : TASTE_FOCUS_DEFAULT,
+        genres: cleanGenres(genres) !== undefined ? JSON.stringify(cleanGenres(genres)) : '[]',
+        discoveryMode: isDiscoveryMode(discoveryMode) ? discoveryMode : DISCOVERY_MODE_DEFAULT,
+        branchTheme: branchTheme ?? null,
+        rabbitHoleArtist: rabbitHoleArtist ?? null,
         createdAt: now,
         updatedAt: now,
       },

@@ -37,6 +37,51 @@ export const TASTE_FOCUS_DEFAULT: TasteFocus = 'automatic';
 
 const TASTE_FOCUS_BOOST = 3;
 
+// ─── Genre focus ─────────────────────────────────────────────────────────────
+// Optional user-selected genres that narrow the discovery prompt. Selecting none
+// leaves the model free to roam the user's full taste profile. The model also
+// returns genre_tags per recommendation, so the LLM can always label results
+// even when no explicit genre focus is set.
+export const GENRE_OPTIONS: { key: string; label: string; hint: string }[] = [
+  { key: 'rock', label: 'Rock', hint: 'Classic, alternative, indie rock' },
+  { key: 'metal', label: 'Metal', hint: 'Heavy, extreme, progressive metal' },
+  { key: 'electronic', label: 'Electronic', hint: 'House, techno, IDM, synth' },
+  { key: 'hiphop', label: 'Hip-hop', hint: 'Rap, trap, boom-bap, experimental' },
+  { key: 'jazz', label: 'Jazz', hint: 'Bebop, fusion, modal, free jazz' },
+  { key: 'rnb', label: 'R&B / Soul', hint: 'Neo-soul, funk, classic soul' },
+  { key: 'folk', label: 'Folk / Acoustic', hint: 'Singer-songwriter, traditional' },
+  { key: 'punk', label: 'Punk / Hardcore', hint: 'Punk, post-hardcore, DIY' },
+  { key: 'pop', label: 'Pop', hint: 'Art pop, synth-pop, indie pop' },
+  { key: 'ambient', label: 'Ambient / Drone', hint: 'Textural, meditative, minimal' },
+  { key: 'experimental', label: 'Experimental', hint: 'Avant-garde, noise, outsider' },
+  { key: 'world', label: 'World / Global', hint: 'African, Latin, Asian traditions' },
+];
+
+export const GENRE_DEFAULT: string[] = [];
+
+export function isGenre(value: string): boolean {
+  return GENRE_OPTIONS.some(g => g.key === value);
+}
+
+// Freeform genre for Genre Dive — broader than the fixed GENRE_OPTIONS chips
+// (auto-suggest returns tags like "post-punk" or "uk garage") but still a
+// sane single-tag string.
+export function isGenreLike(value: string): boolean {
+  const v = value.trim();
+  return v.length > 0 && v.length <= 40 && !/[\n,;]/.test(v);
+}
+
+export function parseGenres(raw: string | null | undefined): string[] {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) {
+      return parsed.filter((g): g is string => typeof g === 'string' && isGenreLike(g));
+    }
+  } catch { /* malformed — treat as empty */ }
+  return [];
+}
+
 export function isTasteFocus(value: string): value is TasteFocus {
   return TASTE_FOCUS_OPTIONS.some(o => o.key === value);
 }

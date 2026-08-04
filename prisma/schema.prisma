@@ -79,6 +79,10 @@ model Settings {
   scheduleMode           String   @default("manual")
   spotifySources         String   @default("all")
   tasteFocus             String   @default("automatic")
+  genres                 String   @default("[]")
+  discoveryMode          String   @default("deep-roots")
+  branchTheme            String?
+  rabbitHoleArtist       String?
   createdAt              DateTime @default(now())
   updatedAt              DateTime @updatedAt
 }

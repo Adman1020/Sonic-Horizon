@@ -32,20 +32,19 @@ async function sleep(ms: number) {
   return new Promise(r => setTimeout(r, ms));
 }
 
-function parseJsonResponse(raw: string): LLMResult {
+function parseJsonResponse(raw: string): any {
   // Strip markdown fences some models add
   const cleaned = raw
     .replace(/^```(?:json)?\s*/i, '')
     .replace(/\s*```\s*$/i, '')
     .trim();
-  const parsed = JSON.parse(cleaned);
-  if (!Array.isArray(parsed?.recommendations)) {
-    throw new Error('Invalid LLM response structure: missing recommendations array');
-  }
-  return parsed as LLMResult;
+  return JSON.parse(cleaned);
 }
 
-export async function generateDiscoveryPlaylist(req: LLMRequest): Promise<LLMResult> {
+// Raw JSON round-trip: returns whatever object the model produced. Used by the
+// pre-analysis passes (genre tagging, branch themes) which have their own
+// schemas. The recommendation schema is validated in generateDiscoveryPlaylist.
+export async function generateLLMJson(req: LLMRequest): Promise<any> {
   if (req.delayMs && req.delayMs > 0) await sleep(req.delayMs);
 
   switch (req.provider) {
@@ -58,6 +57,14 @@ export async function generateDiscoveryPlaylist(req: LLMRequest): Promise<LLMRes
     default:
       throw new Error(`Unknown provider: ${req.provider}`);
   }
+}
+
+export async function generateDiscoveryPlaylist(req: LLMRequest): Promise<LLMResult> {
+  const parsed = await generateLLMJson(req);
+  if (!Array.isArray(parsed?.recommendations)) {
+    throw new Error('Invalid LLM response structure: missing recommendations array');
+  }
+  return parsed as LLMResult;
 }
 
 // ── OpenAI ─────────────────────────────────────────────────────────────────────
@@ -119,7 +126,7 @@ async function callAnthropic(req: LLMRequest): Promise<LLMResult> {
 // Uses system_instruction field (required for Gemini 1.5+)
 // Endpoint: generativelanguage.googleapis.com/v1beta
 async function callGemini(req: LLMRequest): Promise<LLMResult> {
-  const model = req.model || 'gemini-2.5-flash';
+  const model = req.model || 'gemini-3.6-flash';
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${req.apiKey}`;
 
   const res = await fetch(url, {

@@ -88,6 +88,10 @@ function initializeSchema(db: Database): void {
       "scheduleMode" TEXT NOT NULL DEFAULT 'manual',
       "spotifySources" TEXT NOT NULL DEFAULT 'all',
       "tasteFocus" TEXT NOT NULL DEFAULT 'automatic',
+      "genres" TEXT NOT NULL DEFAULT '[]',
+      "discoveryMode" TEXT NOT NULL DEFAULT 'deep-roots',
+      "branchTheme" TEXT,
+      "rabbitHoleArtist" TEXT,
       "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
       "updatedAt" DATETIME NOT NULL,
       CONSTRAINT "Settings_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User" ("id") ON DELETE CASCADE ON UPDATE CASCADE
@@ -107,6 +111,18 @@ function initializeSchema(db: Database): void {
   } catch { /* Column already exists */ }
   try {
     db.exec(`ALTER TABLE "Settings" ADD COLUMN "tasteFocus" TEXT NOT NULL DEFAULT 'automatic';`);
+  } catch { /* Column already exists */ }
+  try {
+    db.exec(`ALTER TABLE "Settings" ADD COLUMN "genres" TEXT NOT NULL DEFAULT '[]';`);
+  } catch { /* Column already exists */ }
+  try {
+    db.exec(`ALTER TABLE "Settings" ADD COLUMN "discoveryMode" TEXT NOT NULL DEFAULT 'deep-roots';`);
+  } catch { /* Column already exists */ }
+  try {
+    db.exec(`ALTER TABLE "Settings" ADD COLUMN "branchTheme" TEXT;`);
+  } catch { /* Column already exists */ }
+  try {
+    db.exec(`ALTER TABLE "Settings" ADD COLUMN "rabbitHoleArtist" TEXT;`);
   } catch { /* Column already exists */ }
   try {
     db.exec(`ALTER TABLE "KnownArtist" ADD COLUMN "playCount" INTEGER NOT NULL DEFAULT 0;`);

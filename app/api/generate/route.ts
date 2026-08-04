@@ -3,17 +3,9 @@ import { prisma } from '@/lib/prisma';
 import { getCurrentUserId } from '@/lib/auth';
 import { getDecryptedKey } from '@/lib/keys';
 import { generateDiscoveryPlaylist, ProviderType } from '@/lib/llm';
-import { getValidSpotifyAccessToken, searchSpotifyTrack, searchSpotifyAlbumTracks } from '@/lib/spotify';
-import { rankSeeds, normalizeArtistName, isTasteFocus, TASTE_FOCUS_DEFAULT, isPoolEligible, isBaselineEligible, type TasteFocus } from '@/lib/artistScore';
-
-const SEED_LIMIT = 50;
-// Send the FULL exclusion baseline to the model. A fixed small cap (500) hid
-// thousands of known artists from the prompt, so the model naturally suggested
-// artists the user already listens to — and the code-side filter then deleted
-// them, returning a fraction of the requested quantity. Artist names are cheap
-// tokens; Gemini/OpenAI/Anthropic all have 200K+ contexts, so send everything
-// (capped defensively for small local models).
-const EXCLUSION_LIST_LIMIT = 10000;
+import { getValidSpotifyAccessToken, searchSpotifyTrack, searchSpotifyAlbumTracks, searchArtistTopTrack } from '@/lib/spotify';
+import { normalizeArtistName, isTasteFocus, TASTE_FOCUS_DEFAULT, isPoolEligible, isBaselineEligible, isGenreLike, parseGenres, type TasteFocus } from '@/lib/artistScore';
+import { buildDiscoveryContext, isDiscoveryMode, DISCOVERY_MODE_DEFAULT, type DiscoveryMode } from '@/lib/discovery';
 
 export async function POST(req: Request) {
   const userId = await getCurrentUserId();
@@ -29,6 +21,10 @@ export async function POST(req: Request) {
       quantity = 20,
       delayMs = 0,
       tasteFocus,
+      genres,
+      discoveryMode,
+      branchTheme,
+      rabbitHoleArtist,
     } = body;
 
     if (!provider) return NextResponse.json({ error: 'Provider required' }, { status: 400 });
@@ -47,10 +43,24 @@ export async function POST(req: Request) {
         ? (settings!.tasteFocus as TasteFocus)
         : TASTE_FOCUS_DEFAULT;
 
+    // Resolve genre focus: request body wins, otherwise the saved setting.
+    // Capped at 4 — a long genre list makes the model diffuse (the randomness
+    // this mode was built to fix).
+    const selectedGenres = (Array.isArray(genres) && genres.length > 0
+      ? genres.filter((g: unknown): g is string => typeof g === 'string' && isGenreLike(g))
+      : parseGenres(settings?.genres ?? '')).slice(0, 4);
+
+    // Resolve discovery mode: request body wins, otherwise the saved setting.
+    const mode: DiscoveryMode = isDiscoveryMode(discoveryMode)
+      ? discoveryMode
+      : isDiscoveryMode(settings?.discoveryMode ?? '')
+        ? (settings!.discoveryMode as DiscoveryMode)
+        : DISCOVERY_MODE_DEFAULT;
+
     // The whole known-artist table is the hard exclusion baseline...
     const allArtists = await prisma.knownArtist.findMany({
       where: { userId },
-      select: { artistName: true, playCount: true, historyScore: true, signals: true, lastSeenAt: true },
+      select: { id: true, artistName: true, playCount: true, historyScore: true, signals: true, lastSeenAt: true },
     });
 
     // ...filtered by the noise floor: history-only artists with <3 real plays
@@ -73,15 +83,21 @@ export async function POST(req: Request) {
 
     const excludedSet = new Set(baselineArtists.map(a => normalizeArtistName(a.artistName)));
 
-    // ...and the top-scored subset is the seed pool for the prompt.
-    const seeds = rankSeeds(poolArtists as any, focus, SEED_LIMIT);
-    const topArtists = seeds.map(s => ({ name: s.artistName, weight: s.score }));
-
-    // Capped in-prompt exclusion list (the code-side filter below enforces the
-    // full baseline no matter what the model does).
-    const exclusionSample = rankSeeds(baselineArtists as any, focus, EXCLUSION_LIST_LIMIT)
-      .map(s => s.artistName);
-    const excludedCount = baselineArtists.length;
+    // Build the mode's thesis + tight seed cluster + lane-prioritised exclusion.
+    const ctx = await buildDiscoveryContext({
+      userId,
+      mode,
+      pool: poolArtists as any,
+      baseline: baselineArtists as any,
+      focus,
+      selectedGenres,
+      branchTheme,
+      rabbitHoleArtist,
+      provider: provider as ProviderType,
+      apiKey,
+      model,
+    });
+    const topArtists = ctx.seeds;
 
     const systemPrompt = `You are an expert music curator and deep-crate collector. 
 Analyze the user's historical listening profile below and recommend NEW music they have never heard.
@@ -93,13 +109,16 @@ CRITICAL CONSTRAINTS:
 4. Output MUST be valid JSON matching exactly the schema below. No markdown, no explanation.
 5. QUALITY: Recommend genuinely GOOD music - critically acclaimed, well-reviewed, or respected within its genre/scene. Never pad the list with filler, novelty tracks, low-effort or throwaway releases. At higher obscurity, this matters MORE, not less: an underground pick should still be a great artist with a strong local reputation, solid reviews, or a respected cult following - not a random obscure unknown. If unsure between two candidates, pick the better-reviewed one.
 
-USER'S TOP ARTISTS (scored by taste affinity — higher score = stronger signal):
+THE DISCOVERY DIRECTIVE — follow this exactly. It is the single most important instruction:
+${ctx.thesisLines.join('\n')}
+
+USER'S TOP ARTISTS (scored by taste affinity — higher score = stronger signal). The directive above tells you which of these to anchor on:
 ${topArtists.map(a => `  - ${a.name} (score ${a.weight.toFixed(1)})`).join('\n')}
 
 EXCLUDED ARTISTS — DO NOT RECOMMEND ANY OF THESE:
-${exclusionSample.join(', ')}
+${ctx.exclusionSample.join(', ')}
 
-(${excludedCount} artists total in the exclusion list; ${excludedCount - exclusionSample.length} more are enforced server-side and forbidden just as strictly.)
+(${ctx.excludedCount} artists total in the exclusion list; ${ctx.excludedCount - ctx.exclusionSample.length} more are enforced server-side and forbidden just as strictly.)
 
 OUTPUT SCHEMA (return exactly this JSON, no other text):
 {
@@ -114,9 +133,9 @@ OUTPUT SCHEMA (return exactly this JSON, no other text):
 }`;
 
     const promptQuantity = Math.max(quantity + 10, Math.ceil(quantity * 1.5));
-    const userPrompt = `Generate ${promptQuantity} ${format === 'tracks' ? 'track' : 'album'} recommendations. Return ONLY the JSON object, no other text.`;
+    const userPrompt = `Generate ${promptQuantity} ${format === 'tracks' ? 'track' : 'album'} recommendations, all following the DISCOVERY DIRECTIVE. Return ONLY the JSON object, no other text.`;
 
-    console.log(`[generate] request qty=${quantity} promptQty=${promptQuantity} format=${format} obscurity=${obscurity} provider=${provider} model=${model ?? 'default'} baseline=${baselineArtists.length} pool=${poolArtists.length} focus=${focus} exclShown=${exclusionSample.length}/${excludedCount}`);
+    console.log(`[generate] mode=${mode} lane="${ctx.laneLabel}" qty=${quantity} promptQty=${promptQuantity} format=${format} obscurity=${obscurity} provider=${provider} model=${model ?? 'default'} baseline=${baselineArtists.length} pool=${poolArtists.length} seeds=${topArtists.length} genres=${selectedGenres.length ? selectedGenres.join(',') : 'none'} exclShown=${ctx.exclusionSample.length}/${ctx.excludedCount}`);
 
     const result = await generateDiscoveryPlaylist({
       provider: provider as ProviderType,
@@ -146,17 +165,29 @@ OUTPUT SCHEMA (return exactly this JSON, no other text):
       return NextResponse.json({ error: 'The model only suggested artists already in your listening history. Try again or raise the quantity.' }, { status: 500 });
     }
 
-    console.log(`[generate] after hard exclusion (${excludedSet.size} baseline artists): ${cleaned.length}/${result.recommendations.length} remain`);
+    // Deduplicate by artist so a batch never contains two recs for the same
+    // artist (tracks) or two albums from the same artist. Keep the first
+    // occurrence in model order.
+    const seenArtists = new Set<string>();
+    const deduped = cleaned.filter((rec: any) => {
+      const artist = String(rec.artist || rec.artistName || '').trim();
+      const key = normalizeArtistName(artist);
+      if (seenArtists.has(key)) return false;
+      seenArtists.add(key);
+      return true;
+    });
+
+    console.log(`[generate] after hard exclusion (${excludedSet.size} baseline artists): ${cleaned.length}/${result.recommendations.length} remain; ${cleaned.length - deduped.length} duplicate-artist recs dropped`);
 
     // Pre-verify candidates against Spotify if token is available
     const spotifyToken = await getValidSpotifyAccessToken(userId);
-    let finalRecommendations = cleaned;
+    let finalRecommendations = deduped;
     let spotifyDropped = 0;
 
     if (spotifyToken) {
       console.log(`[generate] Spotify verification ON — checking up to ${quantity}`);
       const verified = [];
-      for (const rec of cleaned) {
+      for (const rec of deduped) {
         if (verified.length >= quantity) break;
         const artist = rec.artist || rec.artistName || '';
         const title = rec.title || rec.trackName || rec.album || rec.albumName || '';
@@ -167,8 +198,19 @@ OUTPUT SCHEMA (return exactly this JSON, no other text):
           if (albumResult.uris.length > 0) {
             verified.push({ ...rec, spotifyUris: albumResult.uris, spotifyAlbumId: albumResult.albumId });
           } else {
-            spotifyDropped++;
-            console.warn(`[generate] Spotify dropped album: "${artist}" - "${title}"`);
+            // Album couldn't be resolved (likely a hallucinated title). Fall
+            // back to a real, artist-verified song so the rec still lands in
+            // the playlist instead of being silently dropped — and so the
+            // embedded sample never plays a different artist.
+            const track = await searchSpotifyTrack(spotifyToken, artist, title);
+            const fallbackTrack = track?.uri ? track : await searchArtistTopTrack(spotifyToken, artist);
+            if (fallbackTrack?.uri) {
+              verified.push({ ...rec, spotifyUris: [fallbackTrack.uri], spotifyAlbumId: null });
+              console.warn(`[generate] Album not found, fell back to track for: "${artist}" - "${title}"`);
+            } else {
+              spotifyDropped++;
+              console.warn(`[generate] Spotify dropped album (no album or track match): "${artist}" - "${title}"`);
+            }
           }
         } else {
           const track = await searchSpotifyTrack(spotifyToken, artist, title);
@@ -184,11 +226,11 @@ OUTPUT SCHEMA (return exactly this JSON, no other text):
       if (verified.length > 0) {
         finalRecommendations = verified;
       } else {
-        finalRecommendations = cleaned.slice(0, quantity);
+        finalRecommendations = deduped.slice(0, quantity);
       }
     } else {
       console.log('[generate] No Spotify token — returning unverified recommendations');
-      finalRecommendations = cleaned.slice(0, quantity);
+      finalRecommendations = deduped.slice(0, quantity);
     }
 
     console.log(`[generate] FINAL: ${finalRecommendations.length} recs returned (requested ${quantity})`);
