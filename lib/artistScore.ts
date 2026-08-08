@@ -3,39 +3,14 @@
 // DB-backed operations live in lib/artistScoreDb.ts.
 
 // ─── Signal weights ──────────────────────────────────────────────────────────
-// Spotify API sources contribute a fixed weight per occurrence. History
-// (uploaded files / Last.fm scrobbles) is scored separately with
-// log(1+plays) × consistency × recency (see computeHistoryScore).
+// Only explicitly liked/followed Spotify content drives the pool — simply
+// listening is not enough to assert liking. Each source contributes a fixed
+// weight per occurrence.
 export const SIGNAL_MULTIPLIERS: Record<string, number> = {
-  topArtistsShort: 4,
-  topArtistsMedium: 3,
-  topArtistsLong: 2,
-  topTracks: 2,
   followedArtists: 5,
   savedAlbums: 3,
   likedSongs: 3,
-  playlists: 2,
-  recentTracks: 2,
-  lastfmTop: 3,
 };
-
-// ─── Taste focus ─────────────────────────────────────────────────────────────
-// A single user-facing skew control. "Automatic" uses every signal evenly; the
-// other modes multiply one family of signals so that family dominates the seed
-// pool for the next generation. The same underlying data is always used — only
-// the weights change.
-export type TasteFocus = 'automatic' | 'followed' | 'saved' | 'recent';
-
-export const TASTE_FOCUS_OPTIONS: { key: TasteFocus; label: string; hint: string }[] = [
-  { key: 'automatic', label: 'Automatic (balanced)', hint: 'Blend every signal evenly.' },
-  { key: 'followed', label: 'Followed artists', hint: 'Bias towards artists you follow.' },
-  { key: 'saved', label: 'Saved & liked', hint: 'Bias towards saved albums and liked songs.' },
-  { key: 'recent', label: 'Recent listening', hint: 'Bias towards recently played artists.' },
-];
-
-export const TASTE_FOCUS_DEFAULT: TasteFocus = 'automatic';
-
-const TASTE_FOCUS_BOOST = 3;
 
 // ─── Genre focus ─────────────────────────────────────────────────────────────
 // Optional user-selected genres that narrow the discovery prompt. Selecting none
@@ -82,23 +57,6 @@ export function parseGenres(raw: string | null | undefined): string[] {
   return [];
 }
 
-export function isTasteFocus(value: string): value is TasteFocus {
-  return TASTE_FOCUS_OPTIONS.some(o => o.key === value);
-}
-
-export function tasteFocusBoost(signalKey: string, focus: TasteFocus): number {
-  if (focus === 'followed') {
-    return signalKey === 'followedArtists' || signalKey === 'lastfmTop' ? TASTE_FOCUS_BOOST : 1;
-  }
-  if (focus === 'saved') {
-    return signalKey === 'savedAlbums' || signalKey === 'likedSongs' || signalKey === 'playlists' ? TASTE_FOCUS_BOOST : 1;
-  }
-  if (focus === 'recent') {
-    return signalKey === 'recentTracks' ? TASTE_FOCUS_BOOST : 1;
-  }
-  return 1;
-}
-
 // ─── Signals helpers ─────────────────────────────────────────────────────────
 
 export type SignalMap = Record<string, number>;
@@ -136,80 +94,49 @@ export function mergeSignalCounts(...maps: (SignalMap | undefined)[]): SignalMap
   return merged;
 }
 
-export function signalsScore(signals: SignalMap, focus: TasteFocus): number {
+export function signalsScore(signals: SignalMap): number {
   let score = 0;
   for (const [key, count] of Object.entries(signals)) {
     const mult = SIGNAL_MULTIPLIERS[key] ?? 1;
-    score += count * mult * tasteFocusBoost(key, focus);
+    score += count * mult;
   }
   return score;
 }
 
-// ─── History scoring ─────────────────────────────────────────────────────────
-// log(1 + plays) grows sub-linearly so a couple of thousand plays of one artist
-// doesn't drown out everything else; consistency (distinct months of listening)
-// rewards long-term favourites over binge phases; recency decay means artists
-// that haven't been played in years recede naturally.
-export function computeHistoryScore(plays: number, months: number, lastSeenAt: Date | null, now: Date): number {
-  if (plays <= 0) return 0;
-  const logFactor = Math.log(1 + plays);
-  const consistency = 1 + 0.25 * Math.min(months, 12);
-  let recency = 1;
-  if (lastSeenAt && !Number.isNaN(lastSeenAt.getTime())) {
-    const monthsSince = Math.max(0, (now.getTime() - lastSeenAt.getTime()) / (1000 * 60 * 60 * 24 * 30.44));
-    recency = Math.pow(0.92, monthsSince);
-  }
-  return Math.round(logFactor * consistency * recency * 10000) / 10000;
-}
-
 // ─── Pool eligibility ────────────────────────────────────────────────────────
-// Low listen counts are noise: a 1–2 play artist is indistinguishable from a
-// skip, a shuffle one-off, or a misclick, so history-only artists below the
-// floor are dropped from the seed pool AND the exclusion baseline. Explicit API
-// signals (followed / saved / liked / playlists / recent / top) are always
-// strong — those are conscious choices, so they qualify regardless of plays.
-export const HISTORY_PLAY_FLOOR = 3;
-
-// The legacy "imported" marker means the artist came from a pre-scoring import:
-// deliberate (it's real library data, so it must stay in the novelty baseline —
-// never recommend what they already know) but unscored (no play/provenance
-// detail, so it must never steer the seed pool).
+// Any of the explicit-likes signals (followed / saved / liked) qualifies an
+// artist to steer recommendations and be remembered as known taste. There is
+// no play-count floor anymore — provenance IS the qualification.
 export function hasStrongSignal(signals: SignalMap | null | undefined): boolean {
-  return !!signals && Object.entries(signals).some(([key, count]) => key !== 'imported' && count > 0);
+  return !!signals && Object.keys(signals).some(key => signals[key] > 0);
 }
 
-// Qualified to steer recommendations (seed pool): 3+ real plays, or any strong
-// API provenance signal.
-export function isPoolEligible(a: { playCount?: number | null; signals?: string | null }): boolean {
-  return (a.playCount ?? 0) >= HISTORY_PLAY_FLOOR || hasStrongSignal(parseSignals(a.signals));
+// Qualified to steer recommendations (seed pool): any explicit-likes signal.
+export function isPoolEligible(a: { signals?: string | null }): boolean {
+  return hasStrongSignal(parseSignals(a.signals));
 }
 
-// Qualified to be remembered as known taste (novelty baseline): 3+ real plays,
-// any strong API signal, or legacy import provenance.
-export function isBaselineEligible(a: { playCount?: number | null; signals?: string | null }): boolean {
-  const signals = parseSignals(a.signals);
-  return (a.playCount ?? 0) >= HISTORY_PLAY_FLOOR || Object.keys(signals).length > 0;
+// Qualified to be remembered as known taste (novelty baseline): any recorded
+// signal, an artist seen in a fetch (lastSeenAt set), or an artist heard
+// recently (lastPlayedAt set from user-read-recently-played — exclusion only,
+// never a seed). This is the exclusion set the generate pipeline filters out.
+export function isBaselineEligible(a: { signals?: string | null; lastSeenAt?: Date | null; lastPlayedAt?: Date | null }): boolean {
+  return Object.keys(parseSignals(a.signals)).length > 0 || !!a.lastSeenAt || !!a.lastPlayedAt;
 }
 
 // ─── Seed pool ranking ───────────────────────────────────────────────────────
-// total score = historyScore + Σ(signal count × multiplier × taste-focus boost).
-// Callers must pass pool-eligible artists (see isPoolEligible).
+// total score = Σ(signal count × multiplier). Callers must pass pool-eligible
+// artists (see isPoolEligible).
 export interface SeedArtist {
   id: string;
   artistName: string;
-  playCount: number;
-  historyScore: number;
   signals: string;
   lastSeenAt: Date | null;
   score: number;
 }
 
-export function rankSeeds(artists: SeedArtist[], focus: TasteFocus, limit: number): SeedArtist[] {
-  const scored = artists.map(a => {
-    const signals = parseSignals(a.signals);
-    const sig = signalsScore(signals, focus);
-    return { ...a, score: (a.historyScore ?? 0) + sig };
-  });
+export function rankSeeds(artists: Omit<SeedArtist, 'score'>[], limit: number): SeedArtist[] {
+  const scored = artists.map(a => ({ ...a, score: signalsScore(parseSignals(a.signals)) }));
   return scored.sort((a, b) => b.score - a.score).slice(0, limit);
 }
 

@@ -21,7 +21,7 @@
 highly tailored **music discovery playlists** using Large Language Models.
 
 Instead of relying on Spotify's recency bias or opaque recommendation algorithms, it takes your
-**all-time listening history** (Spotify and/or Last.fm), feeds it to an LLM of your choice, and
+**library of liked songs, saved albums, and followed artists on Spotify**, feeds it to an LLM, and
 gets back genuinely off-the-beaten-path recommendations — complete with an explanation for
 *why* each track was suggested.
 
@@ -34,16 +34,15 @@ The result is written straight into your Spotify account:
 
 ## Features
 
-- **Scored artist pool** — your Spotify + Last.fm history and library signals are combined into a single scored artist pool; the top scores become the discovery seeds
-- **Taste focus & obscurity controls** — skew seeds toward followed/saved/recent listening, and dial from mainstream to deep underground
-- **Hard exclusion baseline** — everything already in your history is code-side forbidden, so the LLM can never re-recommend it
+- **Scored artist pool** — your Spotify liked songs, saved albums, and followed artists are combined into a single scored artist pool; the top scores become the discovery seeds
+- **Taste focus & obscurity controls** — skew seeds toward your strongest signals, and dial from mainstream to deep underground
+- **Hard exclusion baseline** — everything already in your library plus artists you've heard in the last ~90 days (recently played) is code-side forbidden, so the LLM never re-recommends it
 - **LLM-generated picks** — every recommendation comes with reasoning and genre tags
 - **6 LLM providers** — OpenAI, Anthropic, Google Gemini, OpenRouter, Microsoft Azure AI Foundry, or local Ollama (free-tier friendly)
 - **Spotify sync** — creates/updates your current playlist, archives everything into a deduplicated history playlist
 - **Inline Spotify players** — each result embeds a compact player so you can preview before pushing to Spotify
-- **Last.fm integration** — scrobbled-history matching, supplemental listening data, and deep imports (up to 5,000 top artists)
-- **Multi-user + admin panel** — per-user API keys, rate limits, and provider settings
-- **Encrypted storage** — your API keys are encrypted at rest in the local database
+- **Multi-user + admin panel** — a single shared admin-configured AI provider, per-user Spotify-account approval, and rate limits
+- **Encrypted storage** — the admin AI key is encrypted at rest in the local database
 - **Fully self-hosted** — no phone-home, runs in Docker or directly on Unraid
 
 ---
@@ -56,15 +55,15 @@ The result is written straight into your Spotify account:
 docker compose up -d --build
 ```
 
-Open <http://localhost:8080> and complete the one-time **Admin Initialization Setup**
-(create your admin account). That's it.
+Open <http://localhost:8080> and sign in with Spotify (the first login becomes
+the initial admin; later logins need admin approval). That's it.
 
 The container mounts these volumes (all defined in `docker-compose.yml`):
 
 | Volume | Purpose |
 | ------ | ------- |
-| `db-data` (named volume) | Everything the app persists — SQLite database (`pde.db`) and uploaded JSON/CSV listening-data files — kept on a named volume so WAL-mode writes stay on the container VM's native filesystem |
-| `./config` | Config files |
+| `db-data` (named volume) | Everything the app persists — SQLite database (`pde.db`) and encrypted settings — kept on a named volume so WAL-mode writes stay on the container VM's native filesystem |
+| `./config` | Legacy bind mount, no longer used by the app (kept for compatibility) |
 
 ### Unraid
 
@@ -73,90 +72,89 @@ The app publishes a ready-to-use template via the
 
 - Image: `ghcr.io/adman1020/sonic-horizon:latest`
 - WebUI: port **8080**
-- App data: whatever folder you set in the Unraid UI (mapped to `/config`)
+- App data: whatever folder you set in the Unraid UI (mapped to `/data`)
 
 **Everything lives in the single AppData folder you choose in the UI.** The template exposes one
-path — **App Data** (`/config`) — and the app writes its database (`pde.db`), encrypted settings,
-and all uploaded listening-data files inside that folder. No other folders are created: on Unraid
-a `/config` path is auto-filled to `/mnt/user/appdata/<container-name>` (e.g. `SonicHorizon`), and
-whatever you set there is what gets used — honor it in the UI and that's where everything goes.
+path — **App Data** (`/data`) — and the app writes its database (`pde.db`) and encrypted settings
+inside that folder. On Unraid the path auto-fills to `/mnt/user/appdata/<container-name>`
+(e.g. `SonicHorizon`); honor it in the UI and that's where everything goes.
 
-If you previously saw two folders (e.g. `SonicHorizon` and `sonichorizon`), that was an old
-template bug: a second hard-coded `Uploads Data` mount sent uploads to a different folder than the
-database. The updated template removes that second mount. Keep the folder your container's **App
-Data** mapping points at (check the container's **Edit** screen), and delete the other.
+> **Updating an existing container:** older templates mapped App Data to `/config`, so your
+> database sits at `<appdata>/pde.db`. The app now expects it at `<appdata>/db/pde.db`. Stop the
+> container, create a `db` subfolder, move `pde.db` into it, and start it again — otherwise your
+> data won't be found.
 
 **Environment variables — no `.env` file needed.** Unraid containers get env vars from the
-template, not a `.env`. The template includes `JWT_SECRET` and `ENCRYPTION_SECRET` fields:
-
-1. In the Unraid WebGUI, go to **Docker → your SonicHorizon container → Edit** (Advanced View).
-2. Generate the two values (run this twice, once per field):
-   ```bash
-   openssl rand -hex 32
-   ```
-3. Set **JWT Secret** and **Encryption Secret** to those values and hit **Apply**.
-
-The app refuses to start until both are set. If you're updating an existing container that was
-created before these fields existed, add them manually under **Add another Path, Port, Variable**
-→ **Variable** (`JWT_SECRET` / `ENCRYPTION_SECRET`), or re-create the container from the updated
-template (keep the same AppData path so your data persists).
+template, not a `.env`. In the container's **Edit** screen (Advanced View), set `JWT_SECRET`,
+`ENCRYPTION_SECRET`, `SPOTIFY_CLIENT_ID`, `SPOTIFY_CLIENT_SECRET` and `APP_BASE_URL`
+(see the table below), generating the two secrets with `openssl rand -hex 32`. The app refuses
+to start until all five are set. If you're updating a container created before these fields
+existed, add them under **Add another Path, Port, Variable** → **Variable**, or re-create from
+the updated template (keep the same AppData path so your data persists).
 
 The Unraid docker-screen icon is pulled from
 `public/icon.svg` in this repo and matches the header/favicon logo.
 
-### Environment variables (before first run)
+### Environment variables
 
-The `.env` needs **exactly two things** — nothing else. Spotify/Last.fm/LLM credentials do **not**
-go in `.env`; each user enters their own in the app (see below).
+The container fails fast if any required variable is missing, so a misconfigured
+boot fails loudly instead of half-starting. Spotify OAuth **is** the app's login
+method, so the client credentials are mandatory.
 
-1. Copy the template: `cp .env.example .env`
-2. Generate two random secrets and paste them in:
-   ```bash
-   openssl rand -hex 32   # run this twice, once per variable
-   ```
-   `docker compose` will refuse to start until both are set.
+```bash
+cp .env.example .env
+openssl rand -hex 32   # run this twice, once per variable
+```
+
+Create a [Spotify app](https://developer.spotify.com/dashboard), paste its Client ID and
+Client Secret into `.env`, and set `APP_BASE_URL` to your public URL (no trailing slash).
 
 | Variable | Required | What it's for |
 | -------- | -------- | ------------- |
 | `JWT_SECRET` | ✅ | Signs login sessions |
-| `ENCRYPTION_SECRET` | ✅ | Encrypts each user's saved API keys at rest |
+| `ENCRYPTION_SECRET` | ✅ | Encrypts the admin-configured AI provider key at rest |
+| `SPOTIFY_CLIENT_ID` | ✅ | Container-level Spotify OAuth client (login) |
+| `SPOTIFY_CLIENT_SECRET` | ✅ | Container-level Spotify OAuth secret (login) |
+| `APP_BASE_URL` | ✅ | Public URL users reach the app at (no trailing slash). Must match the Redirect URI registered in Spotify: `<APP_BASE_URL>/api/spotify/callback` |
+| `TZ` | ❌ | Defaults to `UTC`. Controls when Scheduled Refreshes fire (cron runs in server-local time) |
 
-`DATABASE_URL` is set inside `docker-compose.yml` (`file:/data/db/pde.db`) — no need to
-touch it. When running the Unraid template (which has no compose file), it defaults to
-`file:/config/pde.db`, so the database lives inside your AppData folder.
+`DATABASE_URL` is set inside `docker-compose.yml` (`file:/data/db/pde.db`); the Unraid template
+doesn't set it, so the image default (`file:/data/db/pde.db`) applies and the database lives
+inside your AppData folder.
 
-> **On Unraid there is no `.env` file** — set these two values as template variables in the
+> **On Unraid there is no `.env` file** — set these values as template variables in the
 > container's edit screen instead (see [Unraid](#unraid) above).
 
 ## Integrations & what you'll need
 
 > **What goes where:**
-> - **`.env`** → only `JWT_SECRET` and `ENCRYPTION_SECRET`.
-> - **In the app (per user)** → Spotify Client ID + Secret, your Spotify callback URL, Last.fm
->   API key + username, and your LLM provider key, entered in the matching steps of the
->   single-page setup (Steps 1–3). These are stored **encrypted in the database**, so each user
->   supplies their own credentials.
+> - **`.env` (container-level)** → `JWT_SECRET`, `ENCRYPTION_SECRET`, `SPOTIFY_CLIENT_ID`,
+>   `SPOTIFY_CLIENT_SECRET`, `APP_BASE_URL` (see [Environment variables](#environment-variables)).
+> - **In the app (admin only)** → the LLM provider, model, and API key, configured once in the
+>   Admin panel → AI Configuration. Stored **encrypted in the database** and shared by every user.
 
-The app needs **one LLM provider** to function, and **Spotify** (and optionally **Last.fm**) to
-feed it your listening history.
+The app needs **one LLM provider** to function, and **Spotify** for both login and feeding
+it your liked songs, saved albums, and followed artists.
 
 ### Spotify
 
+Spotify credentials are **container-level** (set in `.env` / the Unraid template), because
+Spotify OAuth doubles as the app's login method. No per-user Spotify keys are stored.
+
 1. Go to the [Spotify Developer Dashboard](https://developer.spotify.com/dashboard) and create an app.
-2. Under **Settings**, add your Redirect URI — `http://[your-host]:8080/api/spotify/callback`
-   (e.g. `http://localhost:8080/api/spotify/callback`). The app derives the callback from the URL
-   you're accessing it from, so register the host you'll actually use.
-3. In the app, open **Step 2 (Spotify)** and paste your **Client ID** and **Client Secret** (stored
-   encrypted per-user).
+2. Under **Settings**, add your Redirect URI — `<APP_BASE_URL>/api/spotify/callback`
+   (e.g. `http://127.0.0.1:8080/api/spotify/callback` for local testing). `APP_BASE_URL` is
+   set in the container env, so register the host you'll actually use.
+3. Put the app's **Client ID** and **Client Secret** in `.env` (or the Unraid template) and
+   restart the container.
 4. The app requests these OAuth scopes on connect:
 
 ```
-user-top-read
-user-read-recently-played
+user-read-email
 user-library-read
 user-follow-read
+user-read-recently-played
 playlist-read-private
-playlist-read-collaborative
 playlist-modify-public
 playlist-modify-private
 ugc-image-upload
@@ -164,11 +162,15 @@ ugc-image-upload
 
 5. In the app, hit **Connect Spotify** and approve the OAuth flow.
 
-### Last.fm (optional)
+### Scheduled Refreshes
 
-1. Create an API account at [last.fm/api](https://www.last.fm/api/account/create).
-2. In the app, open **Step 1 (Last.fm)** and enter your **API key** and **Last.fm username**
-   (stored encrypted per-user).
+Enable **Scheduled Refreshes** in its own collapsible section (above the Generate button) to
+automatically refresh your Spotify signals and generate a fresh "Sonic Horizon" playlist on a
+schedule (daily / weekly / monthly, with a run-day picker). Enabling a schedule locks the
+tuning + Generate controls to the settings saved at that moment; "Run now" force-runs
+regardless. The schedule runs inside the container's own process, so the container must stay
+running. Times are interpreted in the container's `TZ`. A scheduled run never repeats artists
+you've already received — every pushed pick is recorded as known and excluded on later runs.
 
 ### LLM provider (pick one)
 
@@ -181,21 +183,26 @@ ugc-image-upload
 | **Azure AI Foundry** | [Azure portal](https://ai.azure.com/) | Requires a deployed model; key format `endpoint::key` |
 | **Ollama** (local) | – | Runs fully offline; URL defaults to `http://host.docker.internal:11434` |
 
-Add the key in the app's **Step 3 (AI Provider)**. It is encrypted at rest in your local database.
+Configure the provider in the Admin panel → **AI Configuration**. The key is encrypted at rest in your local database.
 
 ---
 
 ## How discovery works
 
-1. **Ingest** — Spotify (top artists/tracks, followed, saved albums, liked songs, playlists,
-   recently played — all 7 sources are fetched automatically on refresh; tune them under the
-   "Advanced — data sources to import" toggle in Step 2) and/or Last.fm (top artists, deep
-   library) plus optional JSON/CSV history uploads.
-2. **Score** — every artist in your history gets a score from play-count history and per-source
-   signals; the top `SEED_LIMIT` become the seed pool, and the rest form a hard exclusion baseline.
-3. **Generate** — one LLM call asks for new picks against that seed pool, constrained by the
-   exclusion list and your obscurity / taste-focus settings.
-4. **Verify** — picks are matched against Spotify; only real tracks/albums survive.
+1. **Ingest (seeds)** — Spotify: your **Liked Songs, Saved Albums**, and **Followed Artists**.
+   These three explicit-likes sources are scored and become the recommendation seed pool.
+   No playlists, no Last.fm, no file uploads — only what you actively like/save/follow.
+2. **Ingest (exclusion)** — your **Recently Played** tracks (last ~500 plays / 90 days) are
+   fetched as an exclusion-only layer so we don't recommend artists you've just heard.
+   Recently-played never becomes a seed; it only filters out things the seed list would
+   otherwise suggest.
+3. **Score** — every artist gets a score from per-source signals (followed / saved / liked);
+   the top `SEED_LIMIT` become the seed pool, and the rest (plus recently-played artists)
+   form a hard exclusion baseline.
+4. **Generate** — one LLM call asks for new picks against that seed pool, constrained by the
+   exclusion list, your obscurity setting, and the selected discovery mode (Deep Roots,
+   Genre Dive, Album Quest, or Rabbit Hole).
+5. **Verify** — picks are matched against Spotify; only real tracks/albums survive.
 
 ## How the sync works
 
@@ -221,7 +228,7 @@ Your archive is the durable record; the current playlist is just the latest snap
 .github/workflows/   CI: build+push to GHCR, Unraid template sync
 .unraid/            Unraid template source
 app/                Next.js App Router routes + UI
-lib/                Spotify, Last.fm, LLM, auth, scoring, encryption, Prisma
+lib/                Spotify, LLM, auth, scoring, scheduling, encryption, Prisma
 prisma/             Database schema
 public/             Static assets + screenshots
 ```

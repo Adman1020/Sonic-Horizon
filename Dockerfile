@@ -33,7 +33,7 @@ RUN apt-get update && apt-get install -y openssl sqlite3 && rm -rf /var/lib/apt/
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV PORT=8080
-ENV DATABASE_URL=file:/config/pde.db
+ENV DATABASE_URL=file:/data/db/pde.db
 
 RUN addgroup --system --gid 1001 nodejs && \
     useradd --system --uid 1001 --gid nodejs --create-home --home-dir /home/nextjs nextjs

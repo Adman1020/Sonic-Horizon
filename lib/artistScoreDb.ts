@@ -1,57 +1,16 @@
 // Server-only DB operations for the scored artist pool. Kept out of
 // lib/artistScore.ts so client components never import Prisma.
-import { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
-import { parseSignals, serializeSignals, mergeSignalCounts, computeHistoryScore, type SignalMap } from '@/lib/artistScore';
+import { parseSignals, serializeSignals, mergeSignalCounts, type SignalMap } from '@/lib/artistScore';
 
-interface HistoryAggRow {
-  artistName: string;
-  plays: bigint | number;
-  months: bigint | number;
-  lastSeen: Date | string | null;
-}
+// How long a recently-played stamp remains a live exclusion signal. Plays older
+// than this are pruned on each refresh so lastPlayedAt always means "heard
+// within the last window" — no runtime cutoff check in isBaselineEligible.
+export const RECENTLY_PLAYED_WINDOW_DAYS = 90;
 
-// Recomputes playCount / historyScore / lastSeenAt for the given user's known
-// artists from their real streaming history. Synthetic "[Imported Artist]" /
-// "[Top Artist]" rows are excluded. Pass artistNames to only refresh a subset
-// (e.g. the artists touched by one upload). Returns the number of artists upserted.
-export async function recomputeHistoryForArtists(userId: string, artistNames?: string[]): Promise<number> {
-  const nameFilter = artistNames && artistNames.length > 0
-    ? Prisma.sql`AND "artistName" IN (${Prisma.join(artistNames)})`
-    : Prisma.empty;
-
-  const rows = await prisma.$queryRaw<HistoryAggRow[]>`
-    SELECT "artistName",
-           COUNT(*) AS plays,
-           COUNT(DISTINCT strftime('%Y-%m', "playedAt")) AS months,
-           MAX("playedAt") AS lastSeen
-    FROM "StreamingHistory"
-    WHERE "userId" = ${userId}
-      AND "trackName" NOT IN ('[Imported Artist]', '[Top Artist]')
-      ${nameFilter}
-    GROUP BY "artistName"
-  `;
-
-  const now = new Date();
-  let updated = 0;
-  for (const row of rows) {
-    const plays = Number(row.plays);
-    const months = Number(row.months);
-    const lastSeen = row.lastSeen ? new Date(row.lastSeen as string) : null;
-    const score = computeHistoryScore(plays, months, lastSeen, now);
-    await prisma.knownArtist.upsert({
-      where: { userId_artistName: { userId, artistName: row.artistName } },
-      update: { playCount: plays, historyScore: score, lastSeenAt: lastSeen },
-      create: { userId, artistName: row.artistName, playCount: plays, historyScore: score, lastSeenAt: lastSeen, addedAt: now },
-    });
-    updated++;
-  }
-  return updated;
-}
-
-// Merges explicit API signals (Spotify sources, Last.fm top artists) into each
-// artist's stored signals and marks them seen. Used by the Spotify fetch and
-// Last.fm top-artists routes. `artistSignals` maps artistName → per-source counts.
+// Merges explicit-likes API signals (followed / saved / liked) into each
+// artist's stored signals and marks them seen. Used by the Spotify fetch route.
+// `artistSignals` maps artistName → per-source counts.
 export async function applySignalsToArtists(
   userId: string,
   artistSignals: Map<string, SignalMap>,
@@ -78,4 +37,47 @@ export async function applySignalsToArtists(
     touched++;
   }
   return touched;
+}
+
+// Records recently-played listen timestamps as an EXCLUSION-ONLY signal —
+// artists heard recently get lastPlayedAt set so isBaselineEligible excludes
+// them from recommendations, but they never become seeds (isPoolEligible only
+// checks explicit-likes signals). After upserting, prunes any lastPlayedAt
+// older than RECENTLY_PLAYED_WINDOW_DAYS so the column stays meaningful.
+// `artistPlayedAt` maps artistName → most recent played_at Date.
+export async function applyRecentlyPlayedArtists(
+  userId: string,
+  artistPlayedAt: Map<string, Date>,
+  now: Date = new Date(),
+): Promise<number> {
+  if (artistPlayedAt.size === 0) {
+    // Still prune, so a user who stopped listening clears stale stamps.
+    await pruneRecentlyPlayed(userId, now);
+    return 0;
+  }
+
+  let upserted = 0;
+  for (const [name, playedAt] of artistPlayedAt) {
+    // The caller pre-aggregates the most recent played_at per artist, so a
+    // plain set is safe — no risk of an older page clobbering a newer stamp.
+    await prisma.knownArtist.upsert({
+      where: { userId_artistName: { userId, artistName: name } },
+      update: { lastPlayedAt: playedAt },
+      create: { userId, artistName: name, addedAt: now, lastPlayedAt: playedAt },
+    });
+    upserted++;
+  }
+
+  await pruneRecentlyPlayed(userId, now);
+  return upserted;
+}
+
+// Nulls lastPlayedAt for any stamp older than the window. Keeps the column
+// meaning "played recently" without a runtime cutoff in eligibility checks.
+export async function pruneRecentlyPlayed(userId: string, now: Date = new Date()): Promise<void> {
+  const cutoff = new Date(now.getTime() - RECENTLY_PLAYED_WINDOW_DAYS * 24 * 60 * 60 * 1000);
+  await prisma.knownArtist.updateMany({
+    where: { userId, lastPlayedAt: { lt: cutoff } },
+    data: { lastPlayedAt: null },
+  });
 }

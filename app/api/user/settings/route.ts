@@ -2,8 +2,12 @@ import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { getCurrentUserId } from '@/lib/auth';
 import { parseSpotifySources, serializeSpotifySources, DEFAULT_SPOTIFY_SOURCES } from '@/lib/spotifySources';
-import { isTasteFocus, TASTE_FOCUS_DEFAULT, parseGenres, isGenreLike } from '@/lib/artistScore';
+import { parseGenres, isGenreLike } from '@/lib/artistScore';
 import { isDiscoveryMode, DISCOVERY_MODE_DEFAULT } from '@/lib/discovery';
+import { resyncScheduler, computeNextRun } from '@/lib/scheduler';
+import { getAIConfig } from '@/lib/keys';
+
+const SCHEDULE_INTERVALS = ['daily', 'weekly', 'monthly'];
 
 export async function GET() {
   const userId = await getCurrentUserId();
@@ -11,23 +15,36 @@ export async function GET() {
 
   try {
     const settings = await prisma.settings.findUnique({ where: { userId } });
-    const user = await prisma.user.findUnique({ where: { id: userId }, select: { username: true, isAdmin: true } });
-    
-    // Count imported data
-    const historyCount = await prisma.streamingHistory.count({ where: { userId } });
-    const knownArtistCount = await prisma.knownArtist.count({ where: { userId } });
-    const savedKeys = await prisma.providerKey.findMany({ where: { userId }, select: { provider: true } });
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { spotifyId: true, spotifyUsername: true, spotifyEmail: true, isAdmin: true },
+    });
+
+    // Count only pool-eligible artists (any explicit-likes signal) so the header
+    // matches the roster (/api/artists also filters by isPoolEligible). Recently-
+    // played-only rows have signals = '{}' and are excluded from this count —
+    // they're an invisible exclusion layer, not recommendation-driving seeds.
+    const knownArtistCount = await prisma.knownArtist.count({
+      where: { userId, signals: { not: '{}' } },
+    });
+    const ai = await getAIConfig();
+
+    const nextRun = settings?.scheduleEnabled
+      ? computeNextRun(
+          settings.scheduleInterval ?? 'daily',
+          settings.scheduleHour ?? 8,
+          settings.scheduleDay ?? 1,
+        )?.toISOString() ?? null
+      : null;
 
     return NextResponse.json({
-      username: user?.username,
+      username: user?.spotifyUsername ?? user?.spotifyEmail ?? null,
       isAdmin: user?.isAdmin,
       settings: settings ? {
         ...settings,
         spotifySources: parseSpotifySources(settings.spotifySources),
-        tasteFocus: isTasteFocus(settings.tasteFocus) ? settings.tasteFocus : TASTE_FOCUS_DEFAULT,
         genres: parseGenres(settings.genres),
         discoveryMode: isDiscoveryMode(settings.discoveryMode) ? settings.discoveryMode : DISCOVERY_MODE_DEFAULT,
-        branchTheme: settings.branchTheme ?? null,
         rabbitHoleArtist: settings.rabbitHoleArtist ?? null,
       } : {
         obscurityLevel: 3,
@@ -35,22 +52,21 @@ export async function GET() {
         recommendationLimit: 20,
         requestsPerMinute: 5,
         spotifyPlaylistPublic: true,
-        scheduleMode: 'manual',
         theme: 'analog-hifi',
-        lastFmUsername: null,
         spotifyAccessToken: null,
         spotifySources: [...DEFAULT_SPOTIFY_SOURCES],
-        tasteFocus: TASTE_FOCUS_DEFAULT,
         genres: [],
         discoveryMode: DISCOVERY_MODE_DEFAULT,
-        branchTheme: null,
         rabbitHoleArtist: null,
+        scheduleEnabled: false,
+        scheduleInterval: 'daily',
+        scheduleHour: 8,
+        scheduleDay: 1,
       },
-      historyCount,
       knownArtistCount,
-      savedProviders: savedKeys.map(k => k.provider),
+      aiConfig: ai.configured ? { provider: ai.provider, model: ai.model, rpm: ai.rpm } : null,
       spotifyConnected: !!(settings?.spotifyAccessToken),
-      lastFmConnected: !!(settings?.lastFmUsername),
+      nextRun,
     });
   } catch (error) {
     console.error('Settings GET error:', error);
@@ -64,12 +80,33 @@ export async function PUT(req: Request) {
 
   try {
     const body = await req.json();
-    const { obscurityLevel, outputFormat, recommendationLimit, requestsPerMinute, spotifyPlaylistPublic, scheduleMode, lastFmUsername, spotifySources, tasteFocus, genres, discoveryMode, branchTheme, rabbitHoleArtist } = body;
+    const {
+      obscurityLevel,
+      outputFormat,
+      recommendationLimit,
+      requestsPerMinute,
+      spotifyPlaylistPublic,
+      spotifySources,
+      genres,
+      discoveryMode,
+      rabbitHoleArtist,
+      scheduleEnabled,
+      scheduleInterval,
+      scheduleHour,
+      scheduleDay,
+    } = body;
 
     const cleanGenres = (g: unknown): string[] | undefined => {
       if (!Array.isArray(g)) return undefined;
       return [...new Set(g.filter((item): item is string => typeof item === 'string' && isGenreLike(item)))];
     };
+
+    const validInterval = (v: unknown): v is string =>
+      typeof v === 'string' && SCHEDULE_INTERVALS.includes(v);
+    const validHour = (v: unknown): boolean =>
+      typeof v === 'number' && Number.isInteger(v) && v >= 0 && v <= 23;
+    const validDay = (v: unknown): boolean =>
+      typeof v === 'number' && Number.isInteger(v) && v >= 1 && v <= 28;
 
     const now = new Date();
     const settings = await prisma.settings.upsert({
@@ -80,14 +117,14 @@ export async function PUT(req: Request) {
         ...(recommendationLimit !== undefined && { recommendationLimit }),
         ...(requestsPerMinute !== undefined && { requestsPerMinute }),
         ...(spotifyPlaylistPublic !== undefined && { spotifyPlaylistPublic }),
-        ...(scheduleMode !== undefined && { scheduleMode }),
-        ...(lastFmUsername !== undefined && { lastFmUsername }),
         ...(spotifySources !== undefined && { spotifySources: serializeSpotifySources(spotifySources) }),
-        ...(tasteFocus !== undefined && isTasteFocus(tasteFocus) && { tasteFocus }),
         ...(cleanGenres(genres) !== undefined && { genres: JSON.stringify(cleanGenres(genres)) }),
         ...(isDiscoveryMode(discoveryMode) && { discoveryMode }),
-        ...(branchTheme !== undefined && { branchTheme }),
         ...(rabbitHoleArtist !== undefined && { rabbitHoleArtist }),
+        ...(scheduleEnabled !== undefined && { scheduleEnabled: !!scheduleEnabled }),
+        ...(validInterval(scheduleInterval) && { scheduleInterval }),
+        ...(validHour(scheduleHour) && { scheduleHour }),
+        ...(validDay(scheduleDay) && { scheduleDay }),
         updatedAt: now,
       },
       create: {
@@ -97,17 +134,23 @@ export async function PUT(req: Request) {
         recommendationLimit: recommendationLimit ?? 20,
         requestsPerMinute: requestsPerMinute ?? 5,
         spotifyPlaylistPublic: spotifyPlaylistPublic ?? true,
-        scheduleMode: scheduleMode ?? 'manual',
-        lastFmUsername: lastFmUsername ?? null,
         spotifySources: spotifySources !== undefined ? serializeSpotifySources(spotifySources) : 'all',
-        tasteFocus: tasteFocus !== undefined && isTasteFocus(tasteFocus) ? tasteFocus : TASTE_FOCUS_DEFAULT,
         genres: cleanGenres(genres) !== undefined ? JSON.stringify(cleanGenres(genres)) : '[]',
         discoveryMode: isDiscoveryMode(discoveryMode) ? discoveryMode : DISCOVERY_MODE_DEFAULT,
-        branchTheme: branchTheme ?? null,
         rabbitHoleArtist: rabbitHoleArtist ?? null,
+        scheduleEnabled: !!scheduleEnabled,
+        scheduleInterval: validInterval(scheduleInterval) ? scheduleInterval : 'daily',
+        scheduleHour: validHour(scheduleHour) ? scheduleHour : 8,
+        scheduleDay: validDay(scheduleDay) ? scheduleDay : 1,
         createdAt: now,
         updatedAt: now,
       },
+    });
+
+    // Keep the in-process cron in sync with the saved schedule (no restart
+    // needed when a user toggles Scheduled Refreshes).
+    resyncScheduler().catch((error: unknown) => {
+      console.error('Settings: scheduler resync failed:', error);
     });
 
     return NextResponse.json({ success: true, settings });

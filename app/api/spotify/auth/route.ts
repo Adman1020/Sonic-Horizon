@@ -1,38 +1,35 @@
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 import crypto from 'crypto';
-import { getCurrentUserId } from '@/lib/auth';
-import { getDecryptedKey } from '@/lib/keys';
 
-import { resolveSpotifyRedirectUri } from '@/lib/spotify';
+import { resolveSpotifyRedirectUri, getSpotifyClientCredentials } from '@/lib/spotify';
 
+// user-read-email is required for identity login (the callback maps the
+// Spotify account to an app user). user-library-read / user-follow-read cover
+// fetching explicit-likes signals that feed the discovery pool. user-read-
+// recently-played supplies a ~90-day exclusion list so we don't recommend
+// things the user just heard (it does NOT feed the seed pool). The rest cover
+// syncing output playlists + covers.
 const SCOPES = [
-  'user-top-read',
-  'user-read-recently-played',
+  'user-read-email',
   'user-library-read',
   'user-follow-read',
+  'user-read-recently-played',
   'playlist-read-private',
-  'playlist-read-collaborative',
   'playlist-modify-public',
   'playlist-modify-private',
   'ugc-image-upload',
 ].join(' ');
 
 export async function GET(request: NextRequest) {
-  const userId = await getCurrentUserId();
-  if (!userId) {
-    return NextResponse.redirect(new URL('/login', request.url));
-  }
-
-  const userClientId = await getDecryptedKey(userId, 'spotify_client_id');
-  const clientId = userClientId || process.env.SPOTIFY_CLIENT_ID;
-
-  if (!clientId) {
+  let clientId: string;
+  try {
+    ({ clientId } = getSpotifyClientCredentials());
+  } catch {
     return NextResponse.redirect(new URL('/?spotify_error=missing_client_id', request.url));
   }
 
-  const userBaseUrl = await getDecryptedKey(userId, 'spotify_redirect_base_url');
-  const redirectUri = resolveSpotifyRedirectUri(request, userBaseUrl);
+  const redirectUri = resolveSpotifyRedirectUri(request);
 
   const state = crypto.randomBytes(16).toString('hex');
   const codeVerifier = crypto.randomBytes(32).toString('base64url');

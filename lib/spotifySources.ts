@@ -1,11 +1,11 @@
+// Only explicitly liked/followed Spotify content drives the discovery pool.
+// Simply listening is not enough to assert liking, so ambient signals (top
+// artists/tracks, recently played, playlists) are gone — as are Last.fm and
+// file uploads.
 export const SPOTIFY_SOURCES = [
-  { key: 'topArtists', label: 'Top Artists' },
-  { key: 'topTracks', label: 'Top Tracks' },
   { key: 'followedArtists', label: 'Followed Artists' },
   { key: 'savedAlbums', label: 'Saved Albums' },
   { key: 'likedSongs', label: 'Liked Songs' },
-  { key: 'playlists', label: 'Playlists' },
-  { key: 'recentTracks', label: 'Recently Played' },
 ] as const;
 
 export type SpotifySourceKey = (typeof SPOTIFY_SOURCES)[number]['key'];

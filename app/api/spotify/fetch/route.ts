@@ -1,41 +1,10 @@
 import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { getCurrentUserId } from '@/lib/auth';
-import { fetchSpotifyTopArtists, fetchSpotifyTopTracks, fetchSpotifyFollowedArtists, fetchSpotifySavedAlbums, fetchSpotifyLikedTracks, fetchSpotifyUserPlaylists, fetchSpotifyPlaylistTracks, fetchSpotifyRecentTracks } from '@/lib/spotify';
-import { getDecryptedKey } from '@/lib/keys';
+import { fetchSpotifyFollowedArtists, fetchSpotifySavedAlbums, fetchSpotifyLikedTracks, fetchSpotifyRecentlyPlayed, getValidSpotifyAccessToken } from '@/lib/spotify';
 import { parseSpotifySources, SPOTIFY_SOURCES, DEFAULT_SPOTIFY_SOURCES } from '@/lib/spotifySources';
-import { applySignalsToArtists } from '@/lib/artistScoreDb';
+import { applySignalsToArtists, applyRecentlyPlayedArtists, RECENTLY_PLAYED_WINDOW_DAYS } from '@/lib/artistScoreDb';
 import type { SignalMap } from '@/lib/artistScore';
-
-async function refreshSpotifyToken(userId: string, refreshToken: string): Promise<string | null> {
-  const userClientId = await getDecryptedKey(userId, 'spotify_client_id');
-  const userClientSecret = await getDecryptedKey(userId, 'spotify_client_secret');
-  const clientId = userClientId || process.env.SPOTIFY_CLIENT_ID || '';
-  const clientSecret = userClientSecret || process.env.SPOTIFY_CLIENT_SECRET || '';
-
-  const bodyParams = new URLSearchParams({
-    grant_type: 'refresh_token',
-    refresh_token: refreshToken,
-    client_id: clientId,
-  });
-
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/x-www-form-urlencoded',
-  };
-
-  if (clientId && clientSecret) {
-    headers['Authorization'] = `Basic ${Buffer.from(`${clientId}:${clientSecret}`).toString('base64')}`;
-  }
-
-  const res = await fetch('https://accounts.spotify.com/api/token', {
-    method: 'POST',
-    headers,
-    body: bodyParams,
-  });
-  if (!res.ok) return null;
-  const data = await res.json();
-  return data.access_token ?? null;
-}
 
 export async function POST(req: Request) {
   const userId = await getCurrentUserId();
@@ -57,21 +26,9 @@ export async function POST(req: Request) {
       .filter(s => enabledSources.includes(s.key))
       .map(s => s.label);
 
-    let accessToken = settings.spotifyAccessToken;
-
-    // Try fetching; if 401, refresh token
-    const testRes = await fetch('https://api.spotify.com/v1/me', {
-      headers: { Authorization: `Bearer ${accessToken}` },
-    });
-
-    if (testRes.status === 401 && settings.spotifyRefreshToken) {
-      const newToken = await refreshSpotifyToken(userId, settings.spotifyRefreshToken);
-      if (!newToken) return NextResponse.json({ error: 'Spotify token refresh failed - please reconnect' }, { status: 401 });
-      accessToken = newToken;
-      await prisma.settings.update({
-        where: { userId },
-        data: { spotifyAccessToken: newToken, updatedAt: new Date() },
-      });
+    const accessToken = await getValidSpotifyAccessToken(userId);
+    if (!accessToken) {
+      return NextResponse.json({ error: 'Spotify token refresh failed - please reconnect' }, { status: 401 });
     }
 
     // Collect per-artist signal counts (source → occurrence count). Weights are
@@ -85,38 +42,7 @@ export async function POST(req: Request) {
       artistSignals.set(trimmed, counts);
     };
 
-    // 1. Top Artists (short_term ×4, medium_term ×3, long_term ×2)
-    if (enabledSources.includes('topArtists')) {
-      const signalKeyByRange: Record<string, string> = {
-        short_term: 'topArtistsShort',
-        medium_term: 'topArtistsMedium',
-        long_term: 'topArtistsLong',
-      };
-      for (const timeRange of ['short_term', 'medium_term', 'long_term'] as const) {
-        try {
-          const data = await fetchSpotifyTopArtists(accessToken, timeRange);
-          for (const artist of data.items ?? []) bump(artist.name, signalKeyByRange[timeRange]);
-        } catch (e) {
-          console.error(`Failed to fetch ${timeRange} top artists:`, e);
-        }
-      }
-    }
-
-    // 2. Top Tracks (short_term, medium_term, long_term)
-    if (enabledSources.includes('topTracks')) {
-      for (const timeRange of ['short_term', 'medium_term', 'long_term'] as const) {
-        try {
-          const data = await fetchSpotifyTopTracks(accessToken, timeRange);
-          for (const track of data.items ?? []) {
-            for (const artist of track.artists ?? []) bump(artist.name, 'topTracks');
-          }
-        } catch (e) {
-          console.error(`Failed to fetch ${timeRange} top tracks:`, e);
-        }
-      }
-    }
-
-    // 3. Followed Artists (cursor-based pagination up to 1,000 artists)
+    // 1. Followed Artists (cursor-based pagination up to 1,000 artists)
     if (enabledSources.includes('followedArtists')) {
       let lastArtistId: string | undefined = undefined;
       for (let page = 0; page < 20; page++) {
@@ -134,7 +60,7 @@ export async function POST(req: Request) {
       }
     }
 
-    // 4. Saved Albums (up to 500 albums)
+    // 2. Saved Albums (up to 500 albums)
     if (enabledSources.includes('savedAlbums')) {
       for (let offset = 0; offset < 500; offset += 50) {
         try {
@@ -150,7 +76,7 @@ export async function POST(req: Request) {
       }
     }
 
-    // 5. Liked Songs (up to 2,000 tracks)
+    // 3. Liked Songs (up to 2,000 tracks)
     if (enabledSources.includes('likedSongs')) {
       for (let offset = 0; offset < 2000; offset += 50) {
         try {
@@ -167,32 +93,55 @@ export async function POST(req: Request) {
       }
     }
 
-    // 6. User Playlists & Tracks (up to 30 playlists, 100 tracks each)
-    if (enabledSources.includes('playlists')) {
-      try {
-        const playlistData = await fetchSpotifyUserPlaylists(accessToken, 30, 0);
-        for (const pl of playlistData.items ?? []) {
-          try {
-            const trackData = await fetchSpotifyPlaylistTracks(accessToken, pl.id, 100, 0);
-            for (const item of trackData.items ?? []) {
-              for (const artist of item.item?.artists ?? []) bump(artist.name, 'playlists');
-            }
-          } catch { /* skip playlist if fails */ }
+    // 4. Recently Played (EXCLUSION ONLY — never feeds seeds). Page back up to
+    // ~500 tracks or until plays are older than the window. A 403 means the
+    // user's token lacks user-read-recently-played (pre-rethink tokens); we
+    // skip silently and flag it so the UI can prompt re-authorisation.
+    let recentlyPlayedSkipped = false;
+    let recentlyPlayedCount = 0;
+    const artistPlayedAt = new Map<string, Date>();
+    const cutoffMs = Date.now() - RECENTLY_PLAYED_WINDOW_DAYS * 24 * 60 * 60 * 1000;
+    try {
+      const first = await fetchSpotifyRecentlyPlayed(accessToken, 50);
+      let items: any[] = first?.items ?? [];
+      let beforeCursor: number | undefined = first?.cursors?.before ? Number(first.cursors.before) : undefined;
+      let pageCount = 0;
+      while (items.length > 0 && pageCount < 10) {
+        let oldest = Infinity;
+        for (const item of items) {
+          const playedAtRaw = item?.played_at;
+          const playedAt = playedAtRaw ? new Date(playedAtRaw) : null;
+          if (!playedAt || isNaN(playedAt.getTime())) continue;
+          // newest→oldest within a page; track the oldest stamp to page before
+          if (playedAt.getTime() < oldest) oldest = playedAt.getTime();
+          for (const artist of item?.track?.artists ?? []) {
+            const name = artist?.name?.trim();
+            if (!name) continue;
+            const existing = artistPlayedAt.get(name);
+            if (!existing || playedAt > existing) artistPlayedAt.set(name, playedAt);
+          }
         }
-      } catch (e) {
-        console.error('Failed to fetch user playlists:', e);
+        // Stop once the oldest thing on this page is older than the window.
+        if (oldest < cutoffMs) break;
+        if (beforeCursor === undefined) break;
+        const next = await fetchSpotifyRecentlyPlayed(accessToken, 50, beforeCursor);
+        items = next?.items ?? [];
+        beforeCursor = next?.cursors?.before ? Number(next.cursors.before) : undefined;
+        pageCount++;
       }
-    }
-
-    // 7. Recently Played Tracks
-    if (enabledSources.includes('recentTracks')) {
-      try {
-        const recentData = await fetchSpotifyRecentTracks(accessToken);
-        for (const item of recentData.items ?? []) {
-          for (const artist of item.track?.artists ?? []) bump(artist.name, 'recentTracks');
-        }
-      } catch (e) {
-        console.error('Failed to fetch recent tracks:', e);
+      if (artistPlayedAt.size > 0) {
+        recentlyPlayedCount = await applyRecentlyPlayedArtists(userId, artistPlayedAt, new Date());
+      } else {
+        // Still prune stale stamps even if this fetch saw nothing new.
+        await applyRecentlyPlayedArtists(userId, artistPlayedAt, new Date());
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (/403/.test(msg)) {
+        recentlyPlayedSkipped = true;
+        console.warn('[spotify:fetch] recently-played scope missing — skipping (re-authorise to enable)');
+      } else {
+        console.warn('[spotify:fetch] recently-played fetch failed:', msg);
       }
     }
 
@@ -217,7 +166,9 @@ export async function POST(req: Request) {
       success: true,
       addedArtists: newArtistNames.length,
       totalKnownArtists,
-      message: `Scored ${touched} artists from Spotify (${newArtistNames.length} new) across ${scannedSummary}`,
+      recentlyPlayedSkipped,
+      recentlyPlayedCount,
+      message: `Scored ${touched} artists from Spotify (${newArtistNames.length} new) across ${scannedSummary}${recentlyPlayedSkipped ? ' — recently-played filter skipped (re-authorise to enable)' : ''}`,
     });
   } catch (error: unknown) {
     console.error('Spotify fetch error:', error);

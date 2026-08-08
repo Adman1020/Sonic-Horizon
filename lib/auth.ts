@@ -1,10 +1,9 @@
 import { SignJWT, jwtVerify } from 'jose';
-import bcrypt from 'bcrypt';
 import { cookies } from 'next/headers';
 import { prisma } from '@/lib/prisma';
 
-export const SESSION_MAX_AGE_SECONDS = 60 * 60 * 24; // 1 day
-export const MIN_PASSWORD_LENGTH = 12;
+// Identity is the Spotify account itself — sessions persist via the JWT cookie.
+export const SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 30; // 30 days
 
 const secretKey = process.env.JWT_SECRET;
 const key = secretKey ? new TextEncoder().encode(secretKey) : null;
@@ -12,15 +11,6 @@ const key = secretKey ? new TextEncoder().encode(secretKey) : null;
 function getJwtKey(): Uint8Array {
   if (!key) throw new Error('JWT_SECRET environment variable is required.');
   return key;
-}
-
-export async function hashPassword(password: string): Promise<string> {
-  const salt = await bcrypt.genSalt(10);
-  return bcrypt.hash(password, salt);
-}
-
-export async function verifyPassword(password: string, hash: string): Promise<boolean> {
-  return bcrypt.compare(password, hash);
 }
 
 export async function signToken(payload: Record<string, unknown>) {
@@ -41,8 +31,8 @@ export async function verifyToken(token: string) {
 }
 
 // Read the signed-in user id, rejecting stale sessions: the token's
-// tokenVersion must match the user's current one (bumped on password
-// change/reset), and the user must still exist (covers deletion).
+// tokenVersion must match the user's current one (bumped on revocation), and
+// the user must still exist (covers deletion).
 export async function getCurrentUserId(): Promise<string | null> {
   try {
     const user = await getCurrentUserRecord();
@@ -52,17 +42,30 @@ export async function getCurrentUserId(): Promise<string | null> {
   }
 }
 
-export async function getCurrentUser(): Promise<{ userId: string; username: string; isAdmin: boolean } | null> {
+export async function getCurrentUser(): Promise<{ userId: string; username: string | null; isAdmin: boolean; approved: boolean } | null> {
   try {
     const user = await getCurrentUserRecord();
     if (!user) return null;
-    return { userId: user.id, username: user.username, isAdmin: user.isAdmin };
+    return {
+      userId: user.id,
+      username: user.spotifyUsername ?? user.spotifyEmail ?? null,
+      isAdmin: user.isAdmin,
+      approved: user.approved,
+    };
   } catch {
     return null;
   }
 }
 
-async function getCurrentUserRecord(): Promise<{ id: string; username: string; isAdmin: boolean; tokenVersion: number } | null> {
+async function getCurrentUserRecord(): Promise<{
+  id: string;
+  spotifyId: string | null;
+  spotifyUsername: string | null;
+  spotifyEmail: string | null;
+  isAdmin: boolean;
+  approved: boolean;
+  tokenVersion: number;
+} | null> {
   const jwtKey = getJwtKey();
   const cookieStore = await cookies();
   const token = cookieStore.get('sonic_horizon_token')?.value;
@@ -72,7 +75,7 @@ async function getCurrentUserRecord(): Promise<{ id: string; username: string; i
   if (!userId) return null;
   const user = await prisma.user.findUnique({
     where: { id: userId },
-    select: { id: true, username: true, isAdmin: true, tokenVersion: true },
+    select: { id: true, spotifyId: true, spotifyUsername: true, spotifyEmail: true, isAdmin: true, approved: true, tokenVersion: true },
   });
   if (!user) return null;
   const tokenVersion = (payload.tokenVersion as number | undefined) ?? 0;
