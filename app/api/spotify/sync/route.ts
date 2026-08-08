@@ -25,15 +25,12 @@ export async function POST(req: Request) {
     const format = requestFormat || settings?.outputFormat || 'tracks';
     const isPublic = requestIsPublic !== undefined ? Boolean(requestIsPublic) : (settings?.spotifyPlaylistPublic ?? true);
 
-    // Get Spotify user ID
-    const profileRes = await fetch('https://api.spotify.com/v1/me', {
-      headers: { Authorization: `Bearer ${accessToken}` },
-    });
-    if (!profileRes.ok) {
-      throw new Error(`Spotify Profile API failed: ${await profileRes.text()}`);
+    // Get Spotify user ID from the stored identity (set at OAuth time).
+    const user = await prisma.user.findUnique({ where: { id: userId }, select: { spotifyId: true } });
+    const spotifyUserId = user?.spotifyId;
+    if (!spotifyUserId) {
+      throw new Error('Spotify identity missing — reconnect Spotify via OAuth.');
     }
-    const profile = await profileRes.json();
-    const spotifyUserId = profile.id;
 
     // Step 1: Read all tracks currently in "Current" playlist (paginated)
     const currentPlaylist = await findUserPlaylist(accessToken, CURRENT_PLAYLIST);

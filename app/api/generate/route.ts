@@ -1,10 +1,10 @@
 import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { getCurrentUserId } from '@/lib/auth';
-import { getDecryptedKey } from '@/lib/keys';
+import { getAIConfig } from '@/lib/keys';
 import { generateDiscoveryPlaylist, ProviderType } from '@/lib/llm';
 import { getValidSpotifyAccessToken, searchSpotifyTrack, searchSpotifyAlbumTracks, searchArtistTopTrack } from '@/lib/spotify';
-import { normalizeArtistName, isTasteFocus, TASTE_FOCUS_DEFAULT, isPoolEligible, isBaselineEligible, isGenreLike, parseGenres, type TasteFocus } from '@/lib/artistScore';
+import { normalizeArtistName, isPoolEligible, isBaselineEligible, isGenreLike, parseGenres } from '@/lib/artistScore';
 import { buildDiscoveryContext, isDiscoveryMode, DISCOVERY_MODE_DEFAULT, type DiscoveryMode } from '@/lib/discovery';
 
 export async function POST(req: Request) {
@@ -14,34 +14,34 @@ export async function POST(req: Request) {
   try {
     const body = await req.json();
     const {
-      provider,
-      model,
+      provider: requestedProvider,
+      model: requestedModel,
       obscurity = 3,
       format = 'tracks',
       quantity = 20,
-      delayMs = 0,
-      tasteFocus,
+      delayMs,
       genres,
       discoveryMode,
-      branchTheme,
       rabbitHoleArtist,
     } = body;
 
-    if (!provider) return NextResponse.json({ error: 'Provider required' }, { status: 400 });
-
-    // Get decrypted API key from DB
-    const apiKey = await getDecryptedKey(userId, provider);
-    if (!apiKey) {
-      return NextResponse.json({ error: `No saved API key for ${provider}. Please add one in Step 2.` }, { status: 400 });
+    // AI setup is admin-configured and shared by all users. The request may
+    // still override provider/model for advanced calls, but the key always
+    // comes from the admin config.
+    const ai = await getAIConfig();
+    const provider = requestedProvider ?? (ai.configured ? ai.provider : null);
+    if (!provider) {
+      return NextResponse.json({ error: 'No AI provider configured. Ask an admin to set one up in the Admin panel.' }, { status: 400 });
     }
+    const apiKey = ai.apiKey;
+    if (provider !== 'Ollama' && !apiKey) {
+      return NextResponse.json({ error: `No API key saved for ${provider}. Ask an admin to add one in the Admin panel.` }, { status: 400 });
+    }
+    const resolvedApiKey = apiKey ?? '';
+    const model = requestedModel ?? ai.model ?? undefined;
+    const resolvedDelayMs = delayMs ?? (ai.rpm > 0 ? Math.round(60000 / ai.rpm) : 0);
 
-    // Resolve taste focus: request body wins, otherwise the saved setting.
     const settings = await prisma.settings.findUnique({ where: { userId } });
-    const focus: TasteFocus = isTasteFocus(tasteFocus)
-      ? tasteFocus
-      : isTasteFocus(settings?.tasteFocus ?? '')
-        ? (settings!.tasteFocus as TasteFocus)
-        : TASTE_FOCUS_DEFAULT;
 
     // Resolve genre focus: request body wins, otherwise the saved setting.
     // Capped at 4 — a long genre list makes the model diffuse (the randomness
@@ -60,24 +60,23 @@ export async function POST(req: Request) {
     // The whole known-artist table is the hard exclusion baseline...
     const allArtists = await prisma.knownArtist.findMany({
       where: { userId },
-      select: { id: true, artistName: true, playCount: true, historyScore: true, signals: true, lastSeenAt: true },
+      select: { id: true, artistName: true, signals: true, lastSeenAt: true },
     });
 
-    // ...filtered by the noise floor: history-only artists with <3 real plays
-    // are neither "known taste" (baseline) nor seed material. API signals always
-    // qualify; legacy imports qualify for the baseline but never the seeds.
+    // ...filtered by provenance: explicit-likes signals always qualify; artists
+    // seen in a fetch (lastSeenAt) but with no signals still count as known.
     const baselineArtists = allArtists.filter(isBaselineEligible);
     const poolArtists = allArtists.filter(isPoolEligible);
 
     if (baselineArtists.length === 0) {
       return NextResponse.json({
-        error: 'No listening profile found. Connect Last.fm or Spotify (Step 1) to build your artist pool.',
+        error: 'No taste profile found. Connect Spotify (Step 1) to build your artist pool.',
       }, { status: 400 });
     }
 
     if (poolArtists.length === 0) {
       return NextResponse.json({
-        error: `Your profile has no qualifying listening data yet (artists need 3+ real plays, or a followed/saved/liked signal). Connect Spotify or Last.fm in Step 1 to build your taste profile.`,
+        error: `Your profile has no qualifying data yet (artists need a followed, saved, or liked signal). Connect Spotify in Step 1 to build your taste profile.`,
       }, { status: 400 });
     }
 
@@ -85,22 +84,19 @@ export async function POST(req: Request) {
 
     // Build the mode's thesis + tight seed cluster + lane-prioritised exclusion.
     const ctx = await buildDiscoveryContext({
-      userId,
       mode,
       pool: poolArtists as any,
       baseline: baselineArtists as any,
-      focus,
       selectedGenres,
-      branchTheme,
       rabbitHoleArtist,
       provider: provider as ProviderType,
-      apiKey,
+      apiKey: resolvedApiKey,
       model,
     });
     const topArtists = ctx.seeds;
 
     const systemPrompt = `You are an expert music curator and deep-crate collector. 
-Analyze the user's historical listening profile below and recommend NEW music they have never heard.
+Analyze the user's taste profile below and recommend NEW music they have never heard.
 
 CRITICAL CONSTRAINTS:
 1. DO NOT recommend any artist in the EXCLUDED ARTISTS list below. This is absolute.
@@ -139,11 +135,11 @@ OUTPUT SCHEMA (return exactly this JSON, no other text):
 
     const result = await generateDiscoveryPlaylist({
       provider: provider as ProviderType,
-      apiKey,
+      apiKey: resolvedApiKey,
       systemPrompt,
       userPrompt,
       model,
-      delayMs,
+      delayMs: resolvedDelayMs,
     });
 
     if (!result?.recommendations?.length) {
@@ -162,7 +158,7 @@ OUTPUT SCHEMA (return exactly this JSON, no other text):
     });
 
     if (cleaned.length === 0) {
-      return NextResponse.json({ error: 'The model only suggested artists already in your listening history. Try again or raise the quantity.' }, { status: 500 });
+      return NextResponse.json({ error: 'The model only suggested artists already in your library. Try again or raise the quantity.' }, { status: 500 });
     }
 
     // Deduplicate by artist so a batch never contains two recs for the same

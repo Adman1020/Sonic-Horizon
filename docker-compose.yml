@@ -14,6 +14,10 @@ services:
       - DATABASE_URL=file:/data/db/pde.db
       - JWT_SECRET=${JWT_SECRET:?JWT_SECRET missing - add it to .env}
       - ENCRYPTION_SECRET=${ENCRYPTION_SECRET:?ENCRYPTION_SECRET missing - add it to .env}
+      - SPOTIFY_CLIENT_ID=${SPOTIFY_CLIENT_ID:?SPOTIFY_CLIENT_ID missing - add it to .env}
+      - SPOTIFY_CLIENT_SECRET=${SPOTIFY_CLIENT_SECRET:?SPOTIFY_CLIENT_SECRET missing - add it to .env}
+      - APP_BASE_URL=${APP_BASE_URL:?APP_BASE_URL missing - add it to .env}
+      - TZ=${TZ:-UTC}
     restart: unless-stopped
 
 volumes:

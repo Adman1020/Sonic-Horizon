@@ -1,18 +1,10 @@
 import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { getCurrentUserId } from '@/lib/auth';
-import { getDecryptedKey } from '@/lib/keys';
-import type { ProviderType } from '@/lib/llm';
-import { isTasteFocus, TASTE_FOCUS_DEFAULT, isPoolEligible, rankSeeds, type TasteFocus } from '@/lib/artistScore';
-import {
-  getRecentPlayCounts,
-  getRecentlyAddedArtistNames,
-  analyzeBranchThemes,
-  tagArtistsWithGenres,
-} from '@/lib/discovery';
+import { getAIConfig } from '@/lib/keys';
+import { isPoolEligible, rankSeeds } from '@/lib/artistScore';
+import { tagArtistsWithGenres } from '@/lib/discovery';
 
-const BRANCH_WINDOW_DAYS = 90;
-const BRANCH_MIN_PLAYS = 2;
 const LANE_CANDIDATE_LIMIT = 40;
 
 export async function POST(req: Request) {
@@ -20,64 +12,34 @@ export async function POST(req: Request) {
   if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
   try {
-    const { provider, model, kind } = await req.json();
-    if (!provider) return NextResponse.json({ error: 'Provider required' }, { status: 400 });
-    if (!['branch-themes', 'genre-suggest'].includes(kind)) {
+    const { kind } = await req.json();
+    if (kind !== 'genre-suggest') {
       return NextResponse.json({ error: 'Unknown analysis kind' }, { status: 400 });
     }
 
-    const apiKey = await getDecryptedKey(userId, provider);
-    if (!apiKey) {
-      return NextResponse.json({ error: `No saved API key for ${provider}. Please add one in Step 2.` }, { status: 400 });
+    // The provider/model/key are the admin-configured ones shared by all users.
+    const ai = await getAIConfig();
+    if (!ai.configured || !ai.provider) {
+      return NextResponse.json({ error: 'No AI provider configured. Ask an admin to set one up in the Admin panel.' }, { status: 400 });
+    }
+    const provider = ai.provider;
+    const model = ai.model ?? undefined;
+    const apiKey = ai.apiKey ?? '';
+    if (provider !== 'Ollama' && !apiKey) {
+      return NextResponse.json({ error: `No API key saved for ${provider}. Ask an admin to add one in the Admin panel.` }, { status: 400 });
     }
 
-    if (kind === 'branch-themes') {
-      const recentPlays = await getRecentPlayCounts(userId, BRANCH_WINDOW_DAYS, BRANCH_MIN_PLAYS);
-      const recentAdded = await getRecentlyAddedArtistNames(userId, BRANCH_WINDOW_DAYS);
-
-      const recentSet = new Map<string, number>();
-      for (const [name, count] of recentPlays) recentSet.set(name, count);
-      for (const name of recentAdded) recentSet.set(name, recentSet.get(name) ?? 1);
-
-      const rankedRecent = [...recentSet.entries()]
-        .sort((a, b) => b[1] - a[1])
-        .slice(0, 25)
-        .map(([name, plays]) => ({ name, plays }));
-
-      if (rankedRecent.length === 0) {
-        return NextResponse.json({
-          themes: [],
-          artists: [],
-          message: 'Not enough recent activity (last 90 days) to analyse. Listen to or add some music first, or pick another mode.',
-        });
-      }
-
-      const themes = await analyzeBranchThemes({ provider, apiKey, model, artists: rankedRecent });
-      return NextResponse.json({
-        themes,
-        artists: rankedRecent.map(a => a.name),
-        message: themes.length
-          ? `Found ${themes.length} themes across your ${rankedRecent.length} recent additions.`
-          : 'Could not cluster your recent additions into themes. Pick a theme below, or use another mode.',
-      });
-    }
-
-    // kind === 'genre-suggest' — tag top artists and aggregate their genres.
-    const settings = await prisma.settings.findUnique({ where: { userId } });
-    const focus: TasteFocus = isTasteFocus(settings?.tasteFocus ?? '')
-      ? (settings!.tasteFocus as TasteFocus)
-      : TASTE_FOCUS_DEFAULT;
-
+    // genre-suggest — tag top artists and aggregate their genres.
     const allArtists = await prisma.knownArtist.findMany({
       where: { userId },
-      select: { id: true, artistName: true, playCount: true, historyScore: true, signals: true, lastSeenAt: true },
+      select: { id: true, artistName: true, signals: true, lastSeenAt: true },
     });
     const poolArtists = allArtists.filter(isPoolEligible);
     if (poolArtists.length === 0) {
-      return NextResponse.json({ genres: [], message: 'No qualifying artists yet — connect a source first.' });
+      return NextResponse.json({ genres: [], message: 'No qualifying artists yet — connect Spotify first.' });
     }
 
-    const candidates = rankSeeds(poolArtists as any, focus, LANE_CANDIDATE_LIMIT)
+    const candidates = rankSeeds(poolArtists as any, LANE_CANDIDATE_LIMIT)
       .map(s => ({ name: s.artistName, weight: s.score }));
     const tagged = await tagArtistsWithGenres({ provider, apiKey, model, artists: candidates });
 

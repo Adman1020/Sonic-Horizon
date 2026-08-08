@@ -1,19 +1,24 @@
 import fs from 'fs';
 import path from 'path';
 import { prisma } from '@/lib/prisma';
-import { getDecryptedKey } from '@/lib/keys';
+
+// Container-level credentials, injected as env vars (Unraid / Coolify friendly).
+// There are no per-user Client ID / Secret overrides anymore.
+export function getSpotifyClientCredentials(): { clientId: string; clientSecret: string } {
+  const clientId = process.env.SPOTIFY_CLIENT_ID ?? '';
+  const clientSecret = process.env.SPOTIFY_CLIENT_SECRET ?? '';
+  if (!clientId || !clientSecret) {
+    throw new Error('SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET environment variables are required.');
+  }
+  return { clientId, clientSecret };
+}
 
 export async function refreshSpotifyAccessToken(userId: string): Promise<string | null> {
   try {
     const settings = await prisma.settings.findUnique({ where: { userId } });
     if (!settings?.spotifyRefreshToken) return null;
 
-    const userClientId = await getDecryptedKey(userId, 'spotify_client_id');
-    const userClientSecret = await getDecryptedKey(userId, 'spotify_client_secret');
-    const clientId = userClientId || process.env.SPOTIFY_CLIENT_ID;
-    const clientSecret = userClientSecret || process.env.SPOTIFY_CLIENT_SECRET;
-
-    if (!clientId || !clientSecret) return null;
+    const { clientId, clientSecret } = getSpotifyClientCredentials();
 
     const authHeader = Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
     const res = await fetch('https://accounts.spotify.com/api/token', {
@@ -69,36 +74,12 @@ export async function getValidSpotifyAccessToken(userId: string): Promise<string
   return await refreshSpotifyAccessToken(userId);
 }
 
-// Spotify Ingestion Service
-export async function fetchSpotifyTopArtists(accessToken: string, timeRange: 'short_term' | 'medium_term' | 'long_term' = 'long_term') {
-  const response = await fetch(`https://api.spotify.com/v1/me/top/artists?time_range=${timeRange}&limit=50`, {
-    headers: { Authorization: `Bearer ${accessToken}` },
-  });
-  if (!response.ok) throw new Error('Failed to fetch Spotify top artists');
-  return response.json();
-}
-
-export async function fetchSpotifyRecentTracks(accessToken: string) {
-  const response = await fetch('https://api.spotify.com/v1/me/player/recently-played?limit=50', {
-    headers: { Authorization: `Bearer ${accessToken}` },
-  });
-  if (!response.ok) throw new Error('Failed to fetch Spotify recent tracks');
-  return response.json();
-}
-
+// Spotify Ingestion Service — only explicit-likes signals feed the pool.
 export async function fetchSpotifyLikedTracks(accessToken: string, limit: number = 50, offset: number = 0) {
   const response = await fetch(`https://api.spotify.com/v1/me/tracks?limit=${limit}&offset=${offset}`, {
     headers: { Authorization: `Bearer ${accessToken}` },
   });
   if (!response.ok) throw new Error('Failed to fetch Spotify liked tracks');
-  return response.json();
-}
-
-export async function fetchSpotifyTopTracks(accessToken: string, timeRange: 'short_term' | 'medium_term' | 'long_term' = 'long_term') {
-  const response = await fetch(`https://api.spotify.com/v1/me/top/tracks?time_range=${timeRange}&limit=50`, {
-    headers: { Authorization: `Bearer ${accessToken}` },
-  });
-  if (!response.ok) throw new Error('Failed to fetch Spotify top tracks');
   return response.json();
 }
 
@@ -116,22 +97,6 @@ export async function fetchSpotifyFollowedArtists(accessToken: string, after?: s
     headers: { Authorization: `Bearer ${accessToken}` },
   });
   if (!response.ok) throw new Error('Failed to fetch Spotify followed artists');
-  return response.json();
-}
-
-export async function fetchSpotifyUserPlaylists(accessToken: string, limit: number = 50, offset: number = 0) {
-  const response = await fetch(`https://api.spotify.com/v1/me/playlists?limit=${limit}&offset=${offset}`, {
-    headers: { Authorization: `Bearer ${accessToken}` },
-  });
-  if (!response.ok) throw new Error('Failed to fetch Spotify user playlists');
-  return response.json();
-}
-
-export async function fetchSpotifyPlaylistTracks(accessToken: string, playlistId: string, limit: number = 100, offset: number = 0) {
-  const response = await fetch(`https://api.spotify.com/v1/playlists/${playlistId}/items?limit=${limit}&offset=${offset}`, {
-    headers: { Authorization: `Bearer ${accessToken}` },
-  });
-  if (!response.ok) throw new Error('Failed to fetch Spotify playlist tracks');
   return response.json();
 }
 
@@ -475,84 +440,20 @@ export async function createOrUpdatePlaylist(accessToken: string, userId: string
   return playlist;
 }
 
-export interface ImportRecord {
-  artistName: string;
-  trackName: string;
-  albumName?: string | null;
-  playedAt: Date;
+// Normalize APP_BASE_URL: tolerate users pasting the full callback URL
+// (…/api/spotify/callback) instead of the bare origin — the trailing callback
+// path is always appended by the caller, never part of the base itself.
+function normalizeAppBaseUrl(baseUrl: string): string {
+  return baseUrl
+    .replace(/\/api\/spotify\/callback$/i, '')
+    .replace(/\/+$/, '');
 }
 
-// Parses a Spotify streaming-history JSON file. Handles both export formats:
-// - Extended history (endsong_*.json / Streaming_History_Audio_*.json):
-//   { ts, master_metadata_track_name, master_metadata_album_artist_name,
-//     master_metadata_album_album_name, ... }
-// - Basic history (StreamingHistory*.json):
-//   { endTime, artistName, trackName, msPlayed }
-// Each file is an array of play events. Podcast episodes and rows missing a
-// track or artist are skipped.
-export function parseEndsongJson(fileContent: string): ImportRecord[] {
-  let data: unknown;
-  try {
-    data = JSON.parse(fileContent);
-  } catch {
-    throw new Error('Invalid JSON — this does not look like a Spotify streaming history file.');
-  }
-
-  const items = Array.isArray(data) ? data : [data];
-  const records: ImportRecord[] = [];
-
-  for (const item of items) {
-    if (!item || typeof item !== 'object') continue;
-    const rec = item as Record<string, unknown>;
-
-    let track = rec.master_metadata_track_name;
-    let artist = rec.master_metadata_album_artist_name;
-    let album = rec.master_metadata_album_album_name;
-    let ts = rec.ts;
-
-    // Basic export uses endTime/artistName/trackName and has no album column.
-    if (typeof rec.trackName === 'string' && typeof rec.artistName === 'string') {
-      if (track == null || typeof track !== 'string') track = rec.trackName;
-      if (artist == null || typeof artist !== 'string') artist = rec.artistName;
-      if (ts == null) ts = rec.endTime;
-    }
-
-    if (typeof track !== 'string' || !track.trim()) continue;
-    if (typeof artist !== 'string' || !artist.trim()) continue;
-
-    const playedAt = typeof ts === 'string' ? new Date(ts) : new Date(NaN);
-    if (Number.isNaN(playedAt.getTime())) continue;
-
-    records.push({
-      artistName: artist.trim(),
-      trackName: track.trim(),
-      albumName: typeof album === 'string' && album.trim() ? album.trim() : null,
-      playedAt,
-    });
-  }
-
-  return records;
-}
-
-export function resolveSpotifyRedirectUri(req: { headers: { get(name: string): string | null }; nextUrl: { host: string; protocol: string } }, userBaseUrl: string | null): string {
-  let baseUrl = userBaseUrl?.trim();
-
-  if (!baseUrl) {
-    const host = req.headers.get('x-forwarded-host') || req.headers.get('host') || req.nextUrl.host;
-    const proto = req.headers.get('x-forwarded-proto') || req.nextUrl.protocol.replace(':', '') || 'http';
-    baseUrl = `${proto}://${host}`;
-  }
-
-  // Force localhost -> 127.0.0.1 since Spotify rejects literal "localhost" in HTTP callback URLs
-  if (baseUrl.includes('localhost')) {
-    baseUrl = baseUrl.replace('localhost', '127.0.0.1');
-  }
-
-  return `${baseUrl.replace(/\/$/, '')}/api/spotify/callback`;
-}
-
-export function safeRedirectUrl(req: { headers: { get(name: string): string | null }; nextUrl: { host: string; protocol: string } }, targetPath: string, userBaseUrl?: string | null): string {
-  let baseUrl = userBaseUrl?.trim();
+export function resolveSpotifyRedirectUri(req: { headers: { get(name: string): string | null }; nextUrl: { host: string; protocol: string } }): string {
+  // APP_BASE_URL (Unraid / Coolify friendly) wins when set, otherwise derive
+  // from the request. Force localhost -> 127.0.0.1 since Spotify rejects
+  // literal "localhost" in HTTP callback URLs.
+  let baseUrl = process.env.APP_BASE_URL?.trim();
 
   if (!baseUrl) {
     const host = req.headers.get('x-forwarded-host') || req.headers.get('host') || req.nextUrl.host;
@@ -564,7 +465,23 @@ export function safeRedirectUrl(req: { headers: { get(name: string): string | nu
     baseUrl = baseUrl.replace('localhost', '127.0.0.1');
   }
 
-  const cleanBase = baseUrl.replace(/\/$/, '');
+  return `${normalizeAppBaseUrl(baseUrl)}/api/spotify/callback`;
+}
+
+export function safeRedirectUrl(req: { headers: { get(name: string): string | null }; nextUrl: { host: string; protocol: string } }, targetPath: string): string {
+  let baseUrl = process.env.APP_BASE_URL?.trim();
+
+  if (!baseUrl) {
+    const host = req.headers.get('x-forwarded-host') || req.headers.get('host') || req.nextUrl.host;
+    const proto = req.headers.get('x-forwarded-proto') || req.nextUrl.protocol.replace(':', '') || 'http';
+    baseUrl = `${proto}://${host}`;
+  }
+
+  if (baseUrl.includes('localhost')) {
+    baseUrl = baseUrl.replace('localhost', '127.0.0.1');
+  }
+
+  const cleanBase = normalizeAppBaseUrl(baseUrl);
   const cleanPath = targetPath.startsWith('/') ? targetPath : `/${targetPath}`;
   return `${cleanBase}${cleanPath}`;
 }

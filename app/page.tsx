@@ -1,7 +1,6 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { SPOTIFY_SOURCES, DEFAULT_SPOTIFY_SOURCES } from '@/lib/spotifySources';
 import { GENRE_OPTIONS } from '@/lib/artistScore';
 import { DISCOVERY_MODES, DISCOVERY_MODE_DEFAULT, type DiscoveryMode, type DiscoveryModeDef } from '@/lib/discoveryModes';
 
@@ -18,142 +17,29 @@ interface Recommendation {
 }
 
 interface UserState {
-  username: string;
+  username: string | null;
   isAdmin: boolean;
-  historyCount: number;
   knownArtistCount: number;
-  savedProviders: string[];
   spotifyConnected: boolean;
-  lastFmConnected: boolean;
+  nextRun: string | null;
+  aiConfig: { provider: string; model: string | null; rpm: number } | null;
   settings: {
     obscurityLevel: number;
     outputFormat: string;
     recommendationLimit: number;
     requestsPerMinute?: number;
     spotifyPlaylistPublic?: boolean;
-    lastFmUsername: string | null;
-    spotifySources?: string[];
-    tasteFocus?: string;
     genres?: string[];
     discoveryMode?: DiscoveryMode;
-    branchTheme?: string | null;
     rabbitHoleArtist?: string | null;
+    scheduleEnabled?: boolean;
+    scheduleInterval?: string;
+    scheduleHour?: number;
+    scheduleDay?: number;
   };
 }
 
 type LogEntry = { time: string; msg: string; type: 'info' | 'success' | 'error' | 'warn' };
-
-// ─── Provider Metadata ────────────────────────────────────────────────────────
-
-interface ModelSuggestion { id: string; label: string; free?: boolean }
-
-interface ProviderMeta {
-  setupLink: string;
-  setupSteps: string[];
-  cheapModels: ModelSuggestion[];
-  keyLabel: string;
-  keyPlaceholder: string;
-  keyNote?: string;
-  isUrlField?: boolean;
-}
-
-const PROVIDER_META: Record<string, ProviderMeta> = {
-  'OpenAI': {
-    setupLink: 'https://platform.openai.com/api-keys',
-    setupSteps: [
-      'Sign in at platform.openai.com',
-      'Go to "API keys" in the left nav and click "Create new secret key"',
-      'Paste the key below. New accounts receive $5 free credit to get started.',
-    ],
-    cheapModels: [
-      { id: 'gpt-4.1-nano', label: 'gpt-4.1-nano — cheapest (~$0.10/M tokens)' },
-      { id: 'gpt-4o-mini', label: 'gpt-4o-mini — cheap, excellent quality (~$0.15/M tokens)' },
-      { id: 'gpt-4o', label: 'gpt-4o — high quality (~$2.50/M tokens)' },
-    ],
-    keyLabel: 'OpenAI API Key',
-    keyPlaceholder: 'sk-proj-...',
-    keyNote: 'New accounts receive $5 free credit',
-  },
-  'Anthropic': {
-    setupLink: 'https://console.anthropic.com/',
-    setupSteps: [
-      'Sign in at console.anthropic.com',
-      'Go to Settings → API Keys and create a key',
-      'No ongoing free tier — prepay credits to use the API',
-    ],
-    cheapModels: [
-      { id: 'claude-haiku-4-5', label: 'claude-haiku-4-5 — cheapest (~$1.00/M tokens)' },
-      { id: 'claude-sonnet-5', label: 'claude-sonnet-5 — best balance (~$2.00/M tokens)' },
-    ],
-    keyLabel: 'Anthropic API Key',
-    keyPlaceholder: 'sk-ant-...',
-  },
-  'Google Gemini': {
-    setupLink: 'https://aistudio.google.com/app/apikey',
-    setupSteps: [
-      'Sign in at aistudio.google.com with your Google account',
-      'Click "Get API Key" → "Create API key in new project"',
-      'Free tier: 15 RPM, 1M tokens/day (not available in EU/UK — use OpenRouter instead)',
-    ],
-    cheapModels: [
-      { id: 'gemini-3.6-flash', label: 'gemini-3.6-flash — free tier, latest & smartest', free: true },
-      { id: 'gemini-3.1-flash-lite', label: 'gemini-3.1-flash-lite — free tier, fastest', free: true },
-    ],
-    keyLabel: 'Google AI Studio API Key',
-    keyPlaceholder: 'AIzaSy...',
-    keyNote: '✓ Generous free tier — best starting point (outside EU/UK)',
-  },
-  'OpenRouter': {
-    setupLink: 'https://openrouter.ai/keys',
-    setupSteps: [
-      'Sign in at openrouter.ai and go to "Keys" → "Create Key"',
-      'Free models need no credit — check openrouter.ai/models and filter by "Free" for current options',
-      'Free tier: 20 req/min, 50 req/day (new accounts). Spend $10 lifetime for 1,000/day.',
-    ],
-    cheapModels: [
-      { id: 'openrouter/free', label: 'Auto (best free model available) — most resilient', free: true },
-      { id: 'google/gemini-2.0-flash-exp:free', label: 'gemini-2.0-flash:free — append :free to any free model', free: true },
-      { id: 'meta-llama/llama-3.3-70b-instruct:free', label: 'llama-3.3-70b:free — powerful open model', free: true },
-    ],
-    keyLabel: 'OpenRouter API Key',
-    keyPlaceholder: 'sk-or-...',
-    keyNote: '✓ Use openrouter/free as model for automatic best-free routing',
-  },
-  'Microsoft Foundry': {
-    setupLink: 'https://ai.azure.com/',
-    setupSteps: [
-      'Sign in at ai.azure.com (Azure AI Foundry)',
-      'Create a project, deploy a model, and copy your endpoint URL and API key',
-      'Enter as: https://your-resource.openai.azure.com::your-api-key',
-    ],
-    cheapModels: [
-      { id: 'gpt-4.1-nano', label: 'gpt-4.1-nano deployment — cheapest option' },
-      { id: 'gpt-4o-mini', label: 'gpt-4o-mini deployment' },
-    ],
-    keyLabel: 'Azure Endpoint & Key (format: endpoint::key)',
-    keyPlaceholder: 'https://my-resource.openai.azure.com::api-key-here',
-  },
-  'Ollama': {
-    setupLink: 'https://ollama.ai/',
-    setupSteps: [
-      'Install Ollama from ollama.ai on any machine on your network',
-      'Pull a model: ollama pull qwen3:8b (or mistral, llama3.3:70b, deepseek-r1, etc.)',
-      'Enter your Ollama URL below. From inside Docker, use host.docker.internal.',
-    ],
-    cheapModels: [
-      { id: 'qwen3:8b', label: 'qwen3:8b — excellent instruction following, recommended' },
-      { id: 'mistral:7b-instruct', label: 'mistral:7b-instruct — fast, nuanced taste understanding' },
-      { id: 'qwen3:32b', label: 'qwen3:32b — best quality if you have 16GB+ VRAM' },
-      { id: 'deepseek-r1', label: 'deepseek-r1 — best reasoning for complex taste profiles' },
-    ],
-    keyLabel: 'Ollama Base URL',
-    keyPlaceholder: 'http://host.docker.internal:11434',
-    keyNote: '✓ Completely free — runs on your own hardware',
-    isUrlField: true,
-  },
-};
-
-const PROVIDER_IDS = Object.keys(PROVIDER_META);
 
 const OBSCURITY_LABELS: Record<number, string> = {
   1: 'Mainstream',
@@ -167,59 +53,36 @@ const OBSCURITY_LABELS: Record<number, string> = {
 // diffuse and the output random again (the exact failure this mode fixes).
 const MAX_GENRES = 4;
 
+// Scheduled refreshes — daily / weekly / monthly
+const SCHEDULE_INTERVALS = ['daily', 'weekly', 'monthly'] as const;
+const SCHEDULE_INTERVAL_LABELS: Record<string, string> = {
+  daily: 'Daily',
+  weekly: 'Weekly',
+  monthly: 'Monthly',
+};
+const WEEKDAY_LABELS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export default function Home() {
   const [user, setUser] = useState<UserState | null>(null);
   const [loading, setLoading] = useState(true);
-  const [pageOrigin, setPageOrigin] = useState('');
+  const [pending, setPending] = useState(false);
 
   // Collapsed state — all collapsed by default
-  const [collapsed, setCollapsed] = useState({ lastfm: true, spotify: true, provider: true, tuning: true });
+  const [collapsed, setCollapsed] = useState({ spotify: true, tuning: true, schedule: true });
   const toggle = (s: keyof typeof collapsed) => setCollapsed(p => ({ ...p, [s]: !p[s] }));
 
-  // ── Last.fm state
-  const [lastFmApiKey, setLastFmApiKey] = useState('');
-  const [savingLastFmKey, setSavingLastFmKey] = useState(false);
-  const [lastFmKeyStatus, setLastFmKeyStatus] = useState('');
-  const [lastFmUsername, setLastFmUsername] = useState('');
-  const [lastFmFetching, setLastFmFetching] = useState(false);
-  const [lastFmStatus, setLastFmStatus] = useState('');
-  const [isDragOverLastfm, setIsDragOverLastfm] = useState(false);
-  const lastfmFileRef = useRef<HTMLInputElement>(null);
-
   // ── Spotify state
-  const [spotifyClientId, setSpotifyClientId] = useState('');
-  const [spotifyClientSecret, setSpotifyClientSecret] = useState('');
-  const [spotifyBaseUrl, setSpotifyBaseUrl] = useState('');
-  const [savingSpotify, setSavingSpotify] = useState(false);
-  const [spotifyCredsStatus, setSpotifyCredsStatus] = useState('');
   const [spotifyFetching, setSpotifyFetching] = useState(false);
-  const [isDragOverSpotify, setIsDragOverSpotify] = useState(false);
-  const spotifyFileRef = useRef<HTMLInputElement>(null);
-  const [spotifySources, setSpotifySources] = useState<string[]>(DEFAULT_SPOTIFY_SOURCES);
-  const [showAdvancedSources, setShowAdvancedSources] = useState(false);
 
   // ── Imported artists list state
-  const [artists, setArtists] = useState<{ name: string; sources: string[]; playCount: number; lastSeenAt: string | Date | null; score: number }[]>([]);
-  const [artistsBySource, setArtistsBySource] = useState({ spotify: 0, lastfm: 0, both: 0 });
+  const [artists, setArtists] = useState<{ name: string; sources: string[]; lastSeenAt: string | Date | null; score: number }[]>([]);
   const [artistsTotal, setArtistsTotal] = useState(0);
   const [artistsOpen, setArtistsOpen] = useState(false);
   const [artistsLoading, setArtistsLoading] = useState(false);
   const [artistsLoaded, setArtistsLoaded] = useState(false);
   const [artistFilter, setArtistFilter] = useState('');
-
-  // ── Upload state (separate per section)
-  const [lastFmUploadStatus, setLastFmUploadStatus] = useState('');
-  const [spotifyUploadStatus, setSpotifyUploadStatus] = useState('');
-
-  // ── AI Provider state
-  const [selectedProvider, setSelectedProvider] = useState('Google Gemini');
-  const [modelInput, setModelInput] = useState('gemini-3.6-flash');
-  const [apiKeyInput, setApiKeyInput] = useState('');
-  const [keySaving, setKeySaving] = useState(false);
-  const [keyStatus, setKeyStatus] = useState('');
-  const [rpm, setRpm] = useState(5); // 0 = unlimited; 5 is a safe default (see note below)
 
   // ── Tuning state
   const [obscurity, setObscurity] = useState(3);
@@ -229,16 +92,20 @@ export default function Home() {
   const [genres, setGenres] = useState<string[]>([]);
   const [discoveryMode, setDiscoveryMode] = useState<DiscoveryMode>(DISCOVERY_MODE_DEFAULT);
   const [infoModal, setInfoModal] = useState<DiscoveryModeDef | null>(null);
-  const [branchThemes, setBranchThemes] = useState<{ id: string; label: string; description: string; artists: string[] }[]>([]);
-  const [branchThemeId, setBranchThemeId] = useState<string | null>(null);
-  const [branchAnalyzing, setBranchAnalyzing] = useState(false);
-  const [branchStatus, setBranchStatus] = useState('');
   const [rabbitHoleArtist, setRabbitHoleArtist] = useState<string | null>(null);
   const [rabbitQuery, setRabbitQuery] = useState('');
   const [genreSuggesting, setGenreSuggesting] = useState(false);
   const [genreSuggestStatus, setGenreSuggestStatus] = useState('');
   const [customGenreInput, setCustomGenreInput] = useState('');
   const [genreInputMsg, setGenreInputMsg] = useState('');
+
+  // ── Scheduled refresh state
+  const [scheduleEnabled, setScheduleEnabled] = useState(false);
+  const [scheduleInterval, setScheduleInterval] = useState('daily');
+  const [scheduleHour, setScheduleHour] = useState(8);
+  const [scheduleDay, setScheduleDay] = useState(1);
+  const [nextRun, setNextRun] = useState<string | null>(null);
+  const [runNowBusy, setRunNowBusy] = useState(false);
 
   // ── Generation state
   const [generating, setGenerating] = useState(false);
@@ -257,7 +124,8 @@ export default function Home() {
 
   // Initialise
   useEffect(() => {
-    setPageOrigin(window.location.origin);
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('pending') === '1') setPending(true);
     fetch('/api/user/settings')
       .then(r => r.json())
       .then((data: UserState) => {
@@ -265,14 +133,15 @@ export default function Home() {
         setObscurity(data.settings.obscurityLevel ?? 3);
         setOutputFormat(data.settings.outputFormat ?? 'tracks');
         setQuantity(data.settings.recommendationLimit ?? 20);
-        if (data.settings.requestsPerMinute !== undefined) setRpm(data.settings.requestsPerMinute);
         if (data.settings.spotifyPlaylistPublic !== undefined) setIsPlaylistPublic(data.settings.spotifyPlaylistPublic);
-        if (data.settings.lastFmUsername) setLastFmUsername(data.settings.lastFmUsername);
-        if (data.settings.spotifySources) setSpotifySources(data.settings.spotifySources);
         if (data.settings.genres) setGenres(data.settings.genres.slice(0, MAX_GENRES));
         if (data.settings.discoveryMode) setDiscoveryMode(data.settings.discoveryMode);
-        if (data.settings.branchTheme) setBranchThemeId(data.settings.branchTheme);
         if (data.settings.rabbitHoleArtist) setRabbitHoleArtist(data.settings.rabbitHoleArtist);
+        if (data.settings.scheduleEnabled !== undefined) setScheduleEnabled(data.settings.scheduleEnabled);
+        if (data.settings.scheduleInterval) setScheduleInterval(data.settings.scheduleInterval);
+        if (data.settings.scheduleHour !== undefined) setScheduleHour(data.settings.scheduleHour);
+        if (data.settings.scheduleDay !== undefined) setScheduleDay(data.settings.scheduleDay);
+        if (data.nextRun) setNextRun(data.nextRun);
         setLoading(false);
       })
       .catch(() => setLoading(false));
@@ -293,113 +162,17 @@ export default function Home() {
     if (spotErr) {
       window.history.replaceState({}, '', '/');
       const msgs: Record<string, string> = {
-        missing_client_id: 'Missing Spotify Client ID — save it in the Spotify section first.',
+        missing_client_id: 'Spotify is not configured on this server — ask the operator to set SPOTIFY_CLIENT_ID / SPOTIFY_CLIENT_SECRET.',
         state_mismatch: 'OAuth state mismatch. Try connecting again.',
-        token_exchange_failed: 'Token exchange failed — check your Client Secret.',
+        token_exchange_failed: 'Token exchange failed — check the server-side Client Secret.',
       };
       addLog(`Spotify: ${msgs[spotErr] ?? spotErr}`, 'error');
     }
   }, [addLog]);
 
-  // Mode-change cleanup: leave Branch Out → drop its stale theme chips;
-  // enter Rabbit Hole → make sure the artist roster is loaded for searching.
-  useEffect(() => {
-    if (discoveryMode !== 'branch-out') {
-      setBranchThemes([]);
-      setBranchThemeId(null);
-      setBranchStatus('');
-    }
-  }, [discoveryMode]);
-
-  // Auto-save settings
-  useEffect(() => {
-    if (!user) return;
-    const t = setTimeout(() => {
-      fetch('/api/user/settings', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ obscurityLevel: obscurity, outputFormat, recommendationLimit: quantity, requestsPerMinute: rpm, spotifyPlaylistPublic: isPlaylistPublic, spotifySources, genres, discoveryMode, branchTheme: branchThemeId, rabbitHoleArtist }),
-      });
-    }, 800);
-    return () => clearTimeout(t);
-  }, [obscurity, outputFormat, quantity, rpm, isPlaylistPublic, spotifySources, genres, discoveryMode, branchThemeId, rabbitHoleArtist, user]);
-
-  // Update default model when provider changes
-  useEffect(() => {
-    const meta = PROVIDER_META[selectedProvider];
-    if (meta?.cheapModels[0]) setModelInput(meta.cheapModels[0].id);
-  }, [selectedProvider]);
-
   // ── Handlers ────────────────────────────────────────────────────────────────
 
-  const saveKey = async (provider: string, value: string, onDone?: () => void) => {
-    const res = await fetch('/api/user/keys', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ provider, apiKey: value }),
-    });
-    if (!res.ok) throw new Error((await res.json()).error);
-    setUser(prev => prev ? { ...prev, savedProviders: [...new Set([...prev.savedProviders, provider])] } : prev);
-    onDone?.();
-  };
-
-  const handleSaveLastFmKey = async () => {
-    if (!lastFmApiKey.trim()) return;
-    setSavingLastFmKey(true); setLastFmKeyStatus('');
-    try {
-      await saveKey('lastfm_api_key', lastFmApiKey.trim());
-      setLastFmKeyStatus('✓ Last.fm API Key saved');
-      setLastFmApiKey('');
-    } catch (e: unknown) { setLastFmKeyStatus(`Error: ${e instanceof Error ? e.message : 'Failed'}`); }
-    setSavingLastFmKey(false);
-  };
-
-  const handleLastFmFetch = async () => {
-    if (!lastFmUsername.trim()) return;
-    setLastFmFetching(true); setLastFmStatus('');
-    try {
-      const res = await fetch('/api/lastfm/fetch', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username: lastFmUsername.trim() }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error);
-      setLastFmStatus(`✓ ${data.message}`);
-      setUser(prev => prev ? {
-        ...prev, lastFmConnected: true,
-        knownArtistCount: data.totalKnownArtists ?? prev.knownArtistCount + data.artistCount,
-        settings: { ...prev.settings, lastFmUsername: lastFmUsername.trim() },
-      } : prev);
-    } catch (e: unknown) { setLastFmStatus(`Error: ${e instanceof Error ? e.message : 'Failed'}`); }
-    setLastFmFetching(false);
-  };
-
-  const handleSaveSpotify = async () => {
-    setSavingSpotify(true); setSpotifyCredsStatus('');
-    try {
-      if (spotifyClientId.trim()) await saveKey('spotify_client_id', spotifyClientId.trim());
-      if (spotifyClientSecret.trim()) await saveKey('spotify_client_secret', spotifyClientSecret.trim());
-      if (spotifyBaseUrl.trim()) await saveKey('spotify_redirect_base_url', spotifyBaseUrl.trim());
-      setSpotifyCredsStatus('✓ Spotify credentials saved');
-      setSpotifyClientId(''); setSpotifyClientSecret(''); setSpotifyBaseUrl('');
-    } catch (e: unknown) { setSpotifyCredsStatus(`Error: ${e instanceof Error ? e.message : 'Failed'}`); }
-    setSavingSpotify(false);
-  };
-
-  const handleConnectSpotify = async () => {
-    if (spotifyClientId.trim() || spotifyClientSecret.trim() || spotifyBaseUrl.trim()) {
-      setSavingSpotify(true);
-      try {
-        if (spotifyClientId.trim()) await saveKey('spotify_client_id', spotifyClientId.trim());
-        if (spotifyClientSecret.trim()) await saveKey('spotify_client_secret', spotifyClientSecret.trim());
-        if (spotifyBaseUrl.trim()) await saveKey('spotify_redirect_base_url', spotifyBaseUrl.trim());
-      } catch (e: unknown) {
-        setSpotifyCredsStatus(`Error: ${e instanceof Error ? e.message : 'Failed to save credentials'}`);
-        setSavingSpotify(false);
-        return;
-      }
-      setSavingSpotify(false);
-    }
+  const handleConnectSpotify = () => {
     window.location.href = '/api/spotify/auth';
   };
 
@@ -409,18 +182,16 @@ export default function Home() {
       const res = await fetch('/api/spotify/fetch', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sources: spotifySources }),
+        body: JSON.stringify({}),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
       setUser(prev => prev ? { ...prev, knownArtistCount: data.totalKnownArtists ?? prev.knownArtistCount + data.addedArtists } : prev);
+      setArtistsLoaded(false);
+      setArtists([]);
       addLog(`Spotify: ${data.message}`, 'success');
-    } catch (e: unknown) { addLog(`Spotify fetch failed: ${e instanceof Error ? e.message : 'Error'}`, 'error'); }
+    } catch (e: unknown) { addLog(`Spotify refresh failed: ${e instanceof Error ? e.message : 'Error'}`, 'error'); }
     setSpotifyFetching(false);
-  };
-
-  const toggleSpotifySource = (key: string) => {
-    setSpotifySources(prev => prev.includes(key) ? prev.filter(k => k !== key) : [...prev, key]);
   };
 
   const fetchRoster = useCallback(async () => {
@@ -431,7 +202,6 @@ export default function Home() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
       setArtists(data.artists);
-      setArtistsBySource(data.bySource ?? { spotify: 0, lastfm: 0, both: 0 });
       setArtistsTotal(data.total);
       setArtistsLoaded(true);
     } catch (e: unknown) {
@@ -445,21 +215,33 @@ export default function Home() {
     if (discoveryMode === 'rabbit-hole') fetchRoster();
   }, [discoveryMode, fetchRoster]);
 
+  // Auto-save settings
+  useEffect(() => {
+    if (!user) return;
+    const t = setTimeout(() => {
+      fetch('/api/user/settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ obscurityLevel: obscurity, outputFormat, recommendationLimit: quantity, spotifyPlaylistPublic: isPlaylistPublic, genres, discoveryMode, rabbitHoleArtist, scheduleEnabled, scheduleInterval, scheduleHour, scheduleDay }),
+      });
+    }, 800);
+    return () => clearTimeout(t);
+  }, [obscurity, outputFormat, quantity, isPlaylistPublic, genres, discoveryMode, rabbitHoleArtist, scheduleEnabled, scheduleInterval, scheduleHour, scheduleDay, user]);
+
   const handleToggleArtists = () => {
     fetchRoster();
     setArtistsOpen(o => !o);
   };
 
-  const handleClearSource = async (source: 'spotify' | 'lastfm') => {
-    const label = source === 'spotify' ? 'Spotify' : 'Last.fm';
+  const handleClearData = async () => {
     if (!window.confirm(
-      `Clear all ${label} artists?\n\nThis removes every imported ${label} play and artist. Your ${label} connection stays — you can re-fetch to import again. This cannot be undone.`
+      'Clear all imported Spotify artists?\n\nThis removes every followed, saved, and liked signal. Your Spotify connection stays — you can refresh to re-import. This cannot be undone.'
     )) return;
     try {
       const res = await fetch('/api/data/reset', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ source }),
+        body: JSON.stringify({}),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
@@ -471,119 +253,22 @@ export default function Home() {
       setArtists([]);
       addLog(data.message, 'success');
     } catch (e: unknown) {
-      addLog(`Failed to clear ${label} data: ${e instanceof Error ? e.message : 'Error'}`, 'error');
+      addLog(`Failed to clear data: ${e instanceof Error ? e.message : 'Error'}`, 'error');
     }
-  };
-
-  const handleFileUpload = async (files: File[], type: 'endsong' | 'lastfm_csv') => {
-    if (files.length === 0) return;
-    const isLastFm = type === 'lastfm_csv';
-    const setStatus = isLastFm ? setLastFmUploadStatus : setSpotifyUploadStatus;
-
-    // Upload one file at a time so we can report real per-file progress.
-    let totalImported = 0;
-    let totalNewArtists = 0;
-    let skipped: string[] = [];
-
-    for (let i = 0; i < files.length; i++) {
-      const file = files[i];
-      const formData = new FormData();
-      formData.append('files', file);
-      formData.append('type', type);
-
-      setStatus(`Uploading ${i + 1}/${files.length}: ${file.name}…`);
-
-      try {
-        const data = await new Promise<{ ok: boolean; status: number; body: any }>((resolve, reject) => {
-          const xhr = new XMLHttpRequest();
-          xhr.open('POST', '/api/upload');
-          xhr.responseType = 'text';
-          xhr.upload.onprogress = (ev) => {
-            if (ev.lengthComputable) {
-              const pct = Math.round((ev.loaded / ev.total) * 100);
-              setStatus(`Uploading ${i + 1}/${files.length}: ${file.name} — ${pct}%`);
-            }
-          };
-          xhr.onload = () => {
-            const contentType = xhr.getResponseHeader('content-type') ?? '';
-            let body: any = null;
-            if (contentType.includes('application/json')) {
-              try { body = JSON.parse(xhr.responseText); } catch { body = null; }
-            }
-            resolve({ ok: xhr.status >= 200 && xhr.status < 300, status: xhr.status, body });
-          };
-          xhr.onerror = () => reject(new Error(`Network error uploading ${file.name}`));
-          xhr.send(formData);
-        });
-
-        if (data.ok && data.body) {
-          totalImported += data.body.imported ?? 0;
-          totalNewArtists += data.body.uniqueArtists ?? 0;
-          if (data.body.skipped?.length) skipped.push(...data.body.skipped);
-        } else if (data.status === 413) {
-          // Non-JSON 413 page from a reverse proxy that caps request bodies
-          throw new Error('Request too large — your reverse proxy caps upload size. Increase client_max_body_size (e.g. 500m) in nginx.');
-        } else {
-          const snippet = data.body?.error ?? `HTTP ${data.status}`;
-          throw new Error(snippet);
-        }
-      } catch (e: unknown) {
-        const msg = e instanceof Error ? e.message : `Failed to upload ${file.name}`;
-        skipped.push(`${file.name} (${msg})`);
-        setStatus(`Error on ${file.name}: ${msg}`);
-      }
-    }
-
-    setUser(prev => prev ? {
-      ...prev,
-      knownArtistCount: (prev.knownArtistCount ?? 0) + totalNewArtists,
-      // Mark the relevant service as "connected" via file so the badge updates
-      lastFmConnected: isLastFm ? true : prev.lastFmConnected,
-      spotifyConnected: !isLastFm ? true : prev.spotifyConnected,
-    } : prev);
-    setArtistsLoaded(false);
-    setArtists([]);
-
-    if (totalImported === 0 && skipped.length === 0) {
-      setStatus(`✓ All ${files.length} file(s) were already imported — no new plays.`);
-    } else if (skipped.length === files.length) {
-      setStatus(`Upload failed for all files: ${skipped.join('; ')}`);
-    } else {
-      const suffix = skipped.length > 0 ? ` Skipped: ${skipped.join('; ')}` : '';
-      setStatus(`✓ Imported ${totalImported} plays from ${totalNewArtists} new artists across ${files.length} file(s).${suffix}`);
-    }
-  };
-
-  const handleSaveProviderKey = async () => {
-    if (!apiKeyInput.trim()) return;
-    setKeySaving(true); setKeyStatus('');
-    try {
-      await saveKey(selectedProvider, apiKeyInput.trim());
-      setKeyStatus(`✓ Key saved for ${selectedProvider}`);
-      setApiKeyInput('');
-    } catch (e: unknown) { setKeyStatus(`Error: ${e instanceof Error ? e.message : 'Failed'}`); }
-    setKeySaving(false);
   };
 
   const handleGenerate = async (override?: { format?: string; quantity?: number; mode?: DiscoveryMode }) => {
     const fmt = override?.format ?? outputFormat;
     const qty = override?.quantity ?? quantity;
     const mode = override?.mode ?? discoveryMode;
-    // Keep the persisted tuning state in sync with what we actually generated
-    // (used by the quick-album shortcut below).
     if (override?.format) setOutputFormat(override.format);
     if (override?.quantity) setQuantity(override.quantity);
     if (override?.mode) setDiscoveryMode(override.mode);
     setGenerating(true); setLogs([]); setResults([]); setSyncResult('');
-    const delayMs = rpm > 0 ? Math.round(60000 / rpm) : 0;
     const modeDef = DISCOVERY_MODES.find(m => m.key === mode);
-    addLog(`Generating with ${selectedProvider} › ${modelInput}`, 'info');
-    addLog(`Mode: ${modeDef?.label ?? mode} · Obscurity ${obscurity}/5 · ${fmt} · ${qty} results${delayMs ? ` · ${rpm} RPM` : ''}`, 'info');
+    addLog(`Generating via ${aiProvider ?? 'admin AI config'}${aiModel ? ` › ${aiModel}` : ''}`, 'info');
+    addLog(`Mode: ${modeDef?.label ?? mode} · Obscurity ${obscurity}/5 · ${fmt} · ${qty} results`, 'info');
     if (mode === 'genre-dive' && genres.length) addLog(`Genre focus: ${genres.join(', ')}`, 'info');
-    if (mode === 'branch-out' && branchThemeId) {
-      const t = branchThemes.find(t => t.id === branchThemeId);
-      addLog(`Branch Out theme: ${t?.label ?? branchThemeId}`, 'info');
-    }
     if (mode === 'rabbit-hole') {
       addLog(`Rabbit Hole anchor: ${rabbitHoleArtist ?? 'your #1 artist'}`, 'info');
     }
@@ -592,7 +277,7 @@ export default function Home() {
       const res = await fetch('/api/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ provider: selectedProvider, model: modelInput, obscurity, format: fmt, quantity: qty, delayMs, genres, discoveryMode: mode, branchTheme: branchThemeId, rabbitHoleArtist }),
+        body: JSON.stringify({ obscurity, format: fmt, quantity: qty, genres, discoveryMode: mode, rabbitHoleArtist }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
@@ -604,47 +289,15 @@ export default function Home() {
     setGenerating(false);
   };
 
-  // One-click: generate 5 albums from artists outside the user's history.
-  const handleQuickAlbum = () => handleGenerate({ format: 'albums', quantity: 5, mode: 'album-quest' });
-
-  // Branch Out: run the LLM theme-clustering pass over recent additions.
-  const handleAnalyzeBranch = async () => {
-    if (!hasKey) return;
-    setBranchAnalyzing(true); setBranchStatus('');
-    addLog('Branch Out: analysing your recent additions for themes…', 'info');
-    try {
-      const res = await fetch('/api/discovery/analyze', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ provider: selectedProvider, model: modelInput, kind: 'branch-themes' }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error);
-      setBranchThemes(data.themes ?? []);
-      setBranchStatus(data.message ?? '');
-      if (data.themes?.length) {
-        addLog(`Branch Out themes: ${data.themes.map((t: { label: string }) => t.label).join(' · ')}`, 'success');
-        setBranchThemeId(prev => prev ?? data.themes[0]?.id ?? null);
-      } else {
-        addLog(`Branch Out: ${data.message ?? 'no themes found'}`, 'warn');
-      }
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : 'Analysis failed';
-      setBranchStatus(`Error: ${msg}`);
-      addLog(`Branch Out analysis failed: ${msg}`, 'error');
-    }
-    setBranchAnalyzing(false);
-  };
-
   // Genre Dive: auto-suggest your actual top genres from history.
   const handleSuggestGenres = async () => {
-    if (!hasKey) return;
+    if (!aiConfigured) return;
     setGenreSuggesting(true); setGenreSuggestStatus('');
     try {
       const res = await fetch('/api/discovery/analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ provider: selectedProvider, model: modelInput, kind: 'genre-suggest' }),
+        body: JSON.stringify({ kind: 'genre-suggest' }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
@@ -723,6 +376,36 @@ export default function Home() {
     setSyncing(false);
   };
 
+  // Force a full scheduled run now: flush current settings, then run
+  // discovery → generate → push to playlist with those exact settings.
+  const handleRunNow = async () => {
+    setRunNowBusy(true); setSyncResult('');
+    try {
+      const saveRes = await fetch('/api/user/settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ obscurityLevel: obscurity, outputFormat, recommendationLimit: quantity, spotifyPlaylistPublic: isPlaylistPublic, genres, discoveryMode, rabbitHoleArtist, scheduleEnabled, scheduleInterval, scheduleHour, scheduleDay }),
+      });
+      if (!saveRes.ok) throw new Error((await saveRes.json()).error);
+      setLogs([]); setResults([]);
+      addLog('Run now: flushing current settings…', 'info');
+      const res = await fetch('/api/discovery/run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      if (data.message) addLog(data.message, 'success');
+      if (data.nextRun) setNextRun(data.nextRun);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : 'Run now failed';
+      addLog(`Run now failed: ${msg}`, 'error');
+      setSyncResult(`Error: ${msg}`);
+    }
+    setRunNowBusy(false);
+  };
+
   const handleLogout = async () => {
     await fetch('/api/auth/logout', { method: 'POST' });
     window.location.href = '/login';
@@ -730,25 +413,31 @@ export default function Home() {
 
   // ── Derived values ──────────────────────────────────────────────────────────
 
-  const hasKey = user?.savedProviders?.includes(selectedProvider);
+  const aiConfigured = !!user?.aiConfig;
+  const aiProvider = user?.aiConfig?.provider ?? 'Admin config';
+  const aiModel = user?.aiConfig?.model ?? null;
+  const scheduleLocked = scheduleEnabled;
   const hasHistory = (user?.knownArtistCount ?? 0) > 0;
-  const hasLastFmKey = user?.savedProviders?.includes('lastfm_api_key');
-  const hasSpotifyClientId = user?.savedProviders?.includes('spotify_client_id');
-  const hasSpotifyBaseUrl = user?.savedProviders?.includes('spotify_redirect_base_url');
-  const meta = PROVIDER_META[selectedProvider];
-  const rpmLabel = rpm > 0 ? `${rpm} req/min` : 'Unlimited';
-  const delayMsDisplay = rpm > 0 ? `${Math.round(60000 / rpm)}ms between calls` : 'No delay';
   const activeModeDef = DISCOVERY_MODES.find(m => m.key === discoveryMode) ?? DISCOVERY_MODES[0];
   const rabbitMatches = rabbitQuery.trim().length > 0
     ? artists.filter(a => a.name.toLowerCase().includes(rabbitQuery.trim().toLowerCase())).slice(0, 8)
     : [];
-  const branchThemeLabel = branchThemes.find(t => t.id === branchThemeId)?.label ?? null;
+  const nextRunLabel = nextRun
+    ? new Date(nextRun).toLocaleString(undefined, {
+        month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
+      })
+    : null;
+  const scheduleSummary = scheduleInterval === 'daily'
+    ? `Daily @ ${String(scheduleHour).padStart(2, '0')}:00`
+    : scheduleInterval === 'weekly'
+      ? `Weekly · ${WEEKDAY_LABELS[scheduleDay - 1] ?? 'Mon'} @ ${String(scheduleHour).padStart(2, '0')}:00`
+      : `Monthly · ${scheduleDay} @ ${String(scheduleHour).padStart(2, '0')}:00`;
 
   // System prompt preview
-  const promptPreview = `You are an expert music curator. Analyse listening history and recommend NEW music.
+  const promptPreview = `You are an expert music curator. Analyse your taste profile and recommend NEW music.
 ━━━━━━━━━━━━━━━━━━━━━━━━━
 OBSCURITY TARGET: ${obscurity}/5 — ${OBSCURITY_LABELS[obscurity]}
-DISCOVERY MODE: ${activeModeDef.label} — ${activeModeDef.tagline}${discoveryMode === 'branch-out' && branchThemeLabel ? ` — theme: ${branchThemeLabel}` : ''}${discoveryMode === 'rabbit-hole' ? ` — anchor: ${rabbitHoleArtist ?? 'your #1 artist'}` : ''}
+DISCOVERY MODE: ${activeModeDef.label} — ${activeModeDef.tagline}${discoveryMode === 'rabbit-hole' ? ` — anchor: ${rabbitHoleArtist ?? 'your #1 artist'}` : ''}
 ${discoveryMode === 'genre-dive' ? `GENRE FOCUS: ${genres.length === 0 ? 'All genres (no constraint)' : genres.join(', ')}\n` : ''}OUTPUT: ${quantity} ${outputFormat === 'tracks' ? 'track' : 'album'} recommendations
 ━━━━━━━━━━━━━━━━━━━━━━━━━
 USER'S TOP ARTISTS (scored by taste affinity):
@@ -778,19 +467,23 @@ OUTPUT JSON SCHEMA:
     );
   }
 
-  // Admin accounts are redirected at middleware level but handle gracefully here too
-  if (user?.isAdmin) {
+  // Unknown Spotify IDs awaiting admin approval land here (proxy allows / with ?pending=1).
+  if (pending) {
     return (
       <div className="min-h-screen bg-analog-bg text-analog-text font-sans flex items-center justify-center p-6">
         <div className="max-w-md w-full bg-analog-card border border-analog-border rounded-xl p-8 shadow-2xl text-center space-y-6">
-          <div className="w-12 h-12 rounded-full border border-analog-accent flex items-center justify-center mx-auto text-analog-accent text-xl" style={{ boxShadow: '0 0 20px rgba(255,0,110,0.3)' }}>⚙</div>
+          <div className="w-12 h-12 rounded-full border border-amber-500/60 flex items-center justify-center mx-auto text-2xl">⏳</div>
           <div>
-            <h1 className="text-xl font-bold text-white">Admin Account</h1>
-            <p className="text-sm text-analog-text-muted mt-2">Admin accounts manage users only. Use a regular user account to run discoveries.</p>
+            <h1 className="text-xl font-bold text-white">Waiting for approval</h1>
+            <p className="text-sm text-analog-text-muted mt-2">
+              Your Spotify account is new to this server. An admin needs to approve it before you can
+              connect music data and run discoveries.
+            </p>
           </div>
-          <a href="/admin" className="block w-full py-3 bg-analog-accent hover:bg-analog-accent-hover text-white font-bold rounded transition-colors">
-            User Management Portal
-          </a>
+          <button onClick={handleLogout}
+            className="w-full py-2.5 border border-analog-border text-analog-text-muted hover:text-white text-sm rounded transition-colors">
+            Logout
+          </button>
         </div>
       </div>
     );
@@ -817,9 +510,11 @@ OUTPUT JSON SCHEMA:
                 <span className="w-1.5 h-1.5 rounded-full" style={{ background: hasHistory ? '#00E5FF' : '#27245A', boxShadow: hasHistory ? '0 0 6px #00E5FF' : 'none' }} />
                 <span className="text-analog-text-muted">{user?.knownArtistCount ?? 0} artists{artistsOpen ? ' ▲' : ' ▼'}</span>
               </button>
+              {user?.isAdmin && (
+                <a href="/admin" className="ml-2 hover:text-white transition-colors">Admin</a>
+              )}
             </div>
             <span className="text-xs text-analog-text-muted">{user?.username}</span>
-            <a href="/change-password" className="text-xs text-analog-text-muted hover:text-white transition-colors">Change password</a>
             <button onClick={handleLogout} className="text-xs text-analog-text-muted hover:text-red-400 transition-colors">Logout</button>
           </div>
         </div>
@@ -835,11 +530,6 @@ OUTPUT JSON SCHEMA:
               <span className="text-xs text-analog-text-muted font-mono">
                 {artistsLoading ? 'Loading…' : `${artistsTotal} artists`}
               </span>
-              {!artistsLoading && artistsBySource && (
-                <span className="text-xs text-analog-text-muted font-mono hidden md:inline">
-                  S:{artistsBySource.spotify} · L:{artistsBySource.lastfm} · both:{artistsBySource.both}
-                </span>
-              )}
               <input type="text" value={artistFilter} onChange={e => setArtistFilter(e.target.value)}
                 placeholder="Filter…"
                 className="flex-1 min-w-[140px] bg-analog-bg border border-analog-border rounded px-3 py-1.5 text-xs text-white placeholder-analog-text-muted focus:outline-none focus:border-analog-accent transition-colors" />
@@ -857,14 +547,14 @@ OUTPUT JSON SCHEMA:
                           <span className="w-1 h-1 rounded-full shrink-0" style={{ background: '#FF006E', boxShadow: '0 0 4px #FF006E' }} />
                           <span className="font-medium">{a.name}</span>
                           <span className="ml-auto shrink-0 font-mono text-xs text-analog-text-muted">
-                            {a.playCount > 0 ? `${a.playCount} plays · ` : ''}w {a.score.toFixed(1)}
+                            w {a.score.toFixed(1)}
                           </span>
                         </div>
                         {a.sources.length > 0 && (
                           <div className="mt-1 flex flex-wrap gap-1 pl-4">
                             {a.sources.map(s => (
                               <span key={s} className="text-[10px] px-1.5 py-0.5 rounded"
-                                style={{ background: s.startsWith('Last.fm') ? 'rgba(186,85,211,0.15)' : 'rgba(0,229,255,0.12)', color: s.startsWith('Last.fm') ? '#BA55D3' : '#00E5FF' }}>
+                                style={{ background: 'rgba(0,229,255,0.12)', color: '#00E5FF' }}>
                                 {s}
                               </span>
                             ))}
@@ -879,479 +569,61 @@ OUTPUT JSON SCHEMA:
           </div>
         )}
 
-        {/* ═══ STEP 1: Last.fm ══════════════════════════════════════════════════ */}
+        {/* ═══ STEP 1: Spotify ══════════════════════════════════════════════════ */}
         <Section
           num="01"
-          title="Last.fm"
-          collapsed={collapsed.lastfm}
-          onToggle={() => toggle('lastfm')}
-          statusBadge={
-            user?.lastFmConnected
-              ? <Badge color="cyan">{user.settings.lastFmUsername} · {user.knownArtistCount} artists</Badge>
-              : <Badge color="dim">Not connected</Badge>
-          }
-        >
-          {/* ── Option A: Upload a file ── */}
-          <div className="space-y-2">
-            <div className="flex items-center gap-2 mb-1">
-              <span className="text-xs font-bold px-2 py-0.5 rounded" style={{ background: 'rgba(0,229,255,0.1)', color: '#00E5FF' }}>Option A</span>
-              <SectionLabel text="Import from a CSV export — no account or API key needed" />
-            </div>
-            <DropZone
-              active={isDragOverLastfm}
-              onDragOver={() => setIsDragOverLastfm(true)}
-              onDragLeave={() => setIsDragOverLastfm(false)}
-              onDrop={files => { setIsDragOverLastfm(false); handleFileUpload(files, 'lastfm_csv'); }}
-              onClick={() => lastfmFileRef.current?.click()}
-            >
-              <p className="text-xs text-analog-text-muted text-center">
-                Drop or click to upload your <strong className="text-analog-text">Last.fm CSV file(s)</strong> — you can select multiple
-              </p>
-              <input ref={lastfmFileRef} type="file" accept=".csv" multiple className="hidden"
-                onChange={e => { const f = e.target.files ? Array.from(e.target.files) : []; if (f.length) handleFileUpload(f, 'lastfm_csv'); }} />
-            </DropZone>
-            <p className="text-xs text-analog-text-muted mt-1.5">
-              💡 Export your scrobbles free at <ExtLink href="https://lastfm.ghan.nl/export/">lastfm.ghan.nl/export ↗</ExtLink> — no login needed, just your username. Works with large histories.
-            </p>
-            <StatusMsg text={lastFmUploadStatus} />
-          </div>
-
-          {/* Divider */}
-          <div className="relative flex items-center gap-3">
-            <div className="flex-1 border-t border-analog-border" />
-            <span className="text-xs text-analog-text-muted font-semibold shrink-0">OR</span>
-            <div className="flex-1 border-t border-analog-border" />
-          </div>
-
-          {/* ── Option B: Connect & pull from API ── */}
-          <div className="space-y-3.5">
-            <div className="flex items-center gap-2 mb-1">
-              <span className="text-xs font-bold px-2 py-0.5 rounded" style={{ background: 'rgba(255,0,110,0.15)', color: '#FF006E' }}>Option B</span>
-              <SectionLabel text="Connect to your Last.fm account & fetch your top artists" />
-            </div>
-            <InstructionCard color="red" steps={[
-              <>Open the <ExtLink href="https://www.last.fm/api/account/create">Last.fm API Account Creation page ↗</ExtLink></>,
-              <>Set <strong>Application Name</strong> to <code className="text-analog-text bg-analog-bg px-1.5 py-0.5 rounded text-xs">Sonic Horizon</code> and submit</>,
-              <>Copy your <strong>API Key</strong> and save it below, then enter your username and hit Fetch</>,
-            ]} />
-            <p className="text-xs text-analog-text-muted mt-1.5">
-              🔑 Already have a Last.fm API key from before? Reuse it via the <ExtLink href="https://www.last.fm/api/accounts">Last.fm API Accounts page ↗</ExtLink> — every app you've created shows its key there.
-            </p>
-            <div className="flex gap-2">
-              <input type="password" value={lastFmApiKey} onChange={e => setLastFmApiKey(e.target.value)}
-                placeholder={hasLastFmKey ? '•••••••••••••••• (saved)' : 'Enter Last.fm API Key'}
-                className="flex-1 bg-analog-bg border border-analog-border rounded px-3 py-2 text-sm text-white placeholder-analog-text-muted focus:outline-none focus:border-analog-accent transition-colors" />
-              <SaveBtn onClick={handleSaveLastFmKey} saving={savingLastFmKey} disabled={!lastFmApiKey.trim()}>Save Key</SaveBtn>
-            </div>
-            <StatusMsg text={lastFmKeyStatus} />
-
-            <div className="flex gap-2">
-              <input type="text" value={lastFmUsername} onChange={e => setLastFmUsername(e.target.value)}
-                onKeyDown={e => e.key === 'Enter' && handleLastFmFetch()}
-                placeholder="your-lastfm-username"
-                className="flex-1 bg-analog-bg border border-analog-border rounded px-3 py-2 text-sm text-white placeholder-analog-text-muted focus:outline-none focus:border-analog-accent transition-colors" />
-              <button onClick={handleLastFmFetch} disabled={lastFmFetching || !lastFmUsername.trim()}
-                className="px-4 py-2 bg-analog-accent hover:bg-analog-accent-hover disabled:opacity-40 disabled:cursor-not-allowed text-white font-semibold text-sm rounded transition-colors">
-                {lastFmFetching ? 'Fetching…' : 'Fetch Artists'}
-              </button>
-            </div>
-            <StatusMsg text={lastFmStatus} />
-
-            {/* Clear artists */}
-            <div className="flex items-center justify-between rounded-lg px-4 py-3 border" style={{ borderColor: 'rgba(255,61,61,0.3)', background: 'rgba(255,61,61,0.05)' }}>
-              <span className="text-xs text-analog-text-muted">
-                <strong className="text-red-400">Clear all imported Last.fm artists</strong> (API + file uploads). Your connection stays — just re-fetch to import again.
-              </span>
-              <button onClick={() => handleClearSource('lastfm')}
-                className="px-3 py-1.5 text-xs font-semibold rounded border transition-colors whitespace-nowrap ml-3"
-                style={{ borderColor: '#FF3D3D', color: '#FF3D3D' }}
-                onMouseEnter={e => (e.currentTarget.style.background = 'rgba(255,61,61,0.15)')}
-                onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}>
-                Clear Last.fm artists
-              </button>
-            </div>
-          </div>
-        </Section>
-
-        {/* ═══ STEP 2: Spotify ══════════════════════════════════════════════════ */}
-        <Section
-          num="02"
           title="Spotify"
           collapsed={collapsed.spotify}
           onToggle={() => toggle('spotify')}
           statusBadge={
             user?.spotifyConnected
-              ? <Badge color="cyan">{spotifyUploadStatus ? 'Imported via file' : 'Connected via OAuth'}</Badge>
+              ? <Badge color="cyan">Connected</Badge>
               : <Badge color="dim">Not connected</Badge>
           }
         >
-          {/* ── Option A: Upload a file ── */}
-          <div className="space-y-2">
-            <div className="flex items-center gap-2 mb-1">
-              <span className="text-xs font-bold px-2 py-0.5 rounded" style={{ background: 'rgba(0,229,255,0.1)', color: '#00E5FF' }}>Option A</span>
-              <SectionLabel text="Import lifetime history from a Spotify data export — no app setup needed" />
-            </div>
-            <DropZone
-              active={isDragOverSpotify}
-              onDragOver={() => setIsDragOverSpotify(true)}
-              onDragLeave={() => setIsDragOverSpotify(false)}
-              onDrop={files => { setIsDragOverSpotify(false); handleFileUpload(files, 'endsong'); }}
-              onClick={() => spotifyFileRef.current?.click()}
-            >
-              <p className="text-xs text-analog-text-muted text-center">
-                Drop or click to upload <strong className="text-analog-text">endsong_*.json</strong> — select <em>all</em> of them at once
-              </p>
-              <input ref={spotifyFileRef} type="file" accept=".json" multiple className="hidden"
-                onChange={e => { const f = e.target.files ? Array.from(e.target.files) : []; if (f.length) handleFileUpload(f, 'endsong'); }} />
-            </DropZone>
-            <p className="text-xs text-analog-text-muted mt-1.5">
-              💡 Request your export at <ExtLink href="https://www.spotify.com/account/privacy">spotify.com/account/privacy ↗</ExtLink> → Extended Streaming History (takes ~30 days via email). Both <code className="text-analog-text bg-analog-bg px-1.5 py-0.5 rounded text-xs">endsong_*.json</code> and the older <code className="text-analog-text bg-analog-bg px-1.5 py-0.5 rounded text-xs">StreamingHistory*.json</code> files work.
-            </p>
-            <StatusMsg text={spotifyUploadStatus} />
-          </div>
-
-          {/* Divider */}
-          <div className="relative flex items-center gap-3">
-            <div className="flex-1 border-t border-analog-border" />
-            <span className="text-xs text-analog-text-muted font-semibold shrink-0">OR</span>
-            <div className="flex-1 border-t border-analog-border" />
-          </div>
-
-          {/* ── Option B: Connect & pull from API ── */}
-          <div className="space-y-3.5">
-            <div className="flex items-center gap-2 mb-1">
-              <span className="text-xs font-bold px-2 py-0.5 rounded" style={{ background: 'rgba(255,0,110,0.15)', color: '#FF006E' }}>Option B</span>
-              <SectionLabel text="Connect your Spotify account via OAuth & refresh artists" />
-            </div>
-            <InstructionCard color="green" steps={[
-              <>Open the <ExtLink href="https://developer.spotify.com/dashboard">Spotify Developer Dashboard ↗</ExtLink> and log in</>,
-              <>Click <strong>Create App</strong>. Name it <code className="text-analog-text bg-analog-bg px-1.5 py-0.5 rounded text-xs">Sonic Horizon</code></>,
+          {/* Connect / Refresh buttons */}
+          <div className="flex flex-wrap gap-3 pt-1">
+            {!user?.spotifyConnected ? (
+              <button onClick={handleConnectSpotify}
+                className="inline-flex items-center gap-2 px-4 py-2.5 font-semibold text-sm rounded transition-colors text-black disabled:opacity-50"
+                style={{ background: '#1DB954', boxShadow: '0 0 15px rgba(29,185,84,0.2)' }}>
+                <svg className="w-4 h-4 fill-current" viewBox="0 0 24 24"><path d="M12 0C5.373 0 0 5.373 0 12s5.373 12 12 12 12-5.373 12-12S18.627 0 12 0zm5.521 17.34c-.24.359-.66.48-1.021.24-2.82-1.74-6.36-2.101-10.561-1.141-.418.122-.779-.179-.899-.539-.12-.421.18-.78.54-.9 4.56-1.02 8.52-.6 11.64 1.32.42.18.479.659.301 1.02zm1.44-3.3c-.301.42-.841.6-1.262.3-3.239-1.98-8.159-2.58-11.939-1.38-.479.12-1.02-.12-1.14-.6-.12-.48.12-1.021.6-1.141C9.6 9.9 15 10.561 18.72 12.84c.361.181.54.78.241 1.2zm.12-3.36C15.24 8.4 8.82 8.16 5.16 9.301c-.6.18-1.2-.18-1.38-.72-.18-.6.18-1.2.72-1.38 4.26-1.26 11.28-1.02 15.72 1.62.54.3.72 1.02.42 1.56-.3.42-1.02.6-1.56.3z"/></svg>
+                Connect Spotify via OAuth
+              </button>
+            ) : (
               <>
-                Set <strong>Redirect URI</strong> to{' '}
-                <code className="text-sh-cyan bg-analog-bg px-1.5 py-0.5 rounded text-xs font-mono select-all">
-                  {pageOrigin
-                    ? (pageOrigin.includes('localhost')
-                        ? `${pageOrigin.replace('localhost', '127.0.0.1')}/api/spotify/callback`
-                        : `${pageOrigin}/api/spotify/callback`)
-                    : 'http://127.0.0.1:8080/api/spotify/callback'}
-                </code>
-              </>,
-              <>Save your <strong>Client ID</strong> and <strong>Client Secret</strong> below, then click Connect</>,
-            ]} />
-
-            {/* Spotify API Scope & Limitation Notice */}
-            <div className="rounded-lg p-3 text-xs leading-relaxed" style={{ background: 'rgba(153,69,255,0.06)', border: '1px solid rgba(153,69,255,0.25)' }}>
-              <p style={{ color: '#00E5FF' }} className="font-semibold mb-1">ℹ Note on Live API vs Full Export:</p>
-              <p className="text-analog-text-muted">
-                Spotify&apos;s live API limits access to your <strong>recent tracks, liked songs, and top ~150 artists</strong>.
-                If you want your <em>complete, 100% lifetime listening history</em> (all-time scrobbles), use <strong className="text-white">Option A</strong> above to upload your Spotify data export instead.
-              </p>
-            </div>
-
-            {/* Dynamic Spotify Callback URL Helper / Warning */}
-            {(() => {
-              const isHttps = pageOrigin.startsWith('https://');
-              const isLocalhost = pageOrigin.includes('localhost');
-              const isLoopback = pageOrigin.startsWith('http://127.0.0.1') || pageOrigin.startsWith('http://[::1]');
-
-              if (isHttps) {
-                return (
-                  <div className="rounded-lg p-3.5 space-y-1 text-xs" style={{ background: 'rgba(0,229,255,0.06)', border: '1px solid rgba(0,229,255,0.3)' }}>
-                    <p className="font-semibold text-sh-cyan">✓ Valid HTTPS Connection Detected</p>
-                    <p className="text-analog-text-muted leading-relaxed">
-                      Spotify fully supports HTTPS redirect URIs. Register <code className="text-white font-mono bg-analog-bg px-1 py-0.5 rounded">{pageOrigin}/api/spotify/callback</code> in your Spotify Dashboard.
-                    </p>
-                  </div>
-                );
-              }
-
-              if (isLoopback) {
-                return (
-                  <div className="rounded-lg p-3.5 space-y-1 text-xs" style={{ background: 'rgba(0,229,255,0.06)', border: '1px solid rgba(0,229,255,0.3)' }}>
-                    <p className="font-semibold text-sh-cyan">✓ Valid Local Loopback Address (127.0.0.1)</p>
-                    <p className="text-analog-text-muted leading-relaxed">
-                      Spotify permits HTTP for local loopback testing. Register <code className="text-white font-mono bg-analog-bg px-1 py-0.5 rounded">{pageOrigin}/api/spotify/callback</code> in your Spotify Dashboard.
-                    </p>
-                  </div>
-                );
-              }
-
-              if (isLocalhost) {
-                return (
-                  <div className="rounded-lg p-3.5 space-y-1.5 text-xs" style={{ background: 'rgba(251,191,36,0.06)', border: '1px solid rgba(251,191,36,0.3)' }}>
-                    <p className="font-semibold" style={{ color: '#FBB724' }}>⚠ Prohibited Origin: <code>localhost</code></p>
-                    <p className="text-analog-text-muted leading-relaxed">
-                      Spotify prohibits using <code className="text-white">localhost</code> in HTTP redirect URIs.
-                    </p>
-                    <p className="text-analog-text-muted">
-                      👉 <strong>Action required:</strong> Open this app at{' '}
-                      <a href={pageOrigin.replace('localhost', '127.0.0.1')} className="underline font-semibold" style={{ color: '#FF006E' }}>
-                        {pageOrigin.replace('localhost', '127.0.0.1')}
-                      </a>{' '}
-                      instead, and set <code className="text-white font-mono bg-analog-bg px-1 py-0.5 rounded">{pageOrigin.replace('localhost', '127.0.0.1')}/api/spotify/callback</code> as your Redirect URI in Spotify Dashboard.
-                    </p>
-                  </div>
-                );
-              }
-
-              // HTTP over LAN IP or non-loopback domain
-              return (
-                <div className="rounded-lg p-3.5 space-y-1.5 text-xs" style={{ background: 'rgba(251,191,36,0.06)', border: '1px solid rgba(251,191,36,0.3)' }}>
-                  <p className="font-semibold" style={{ color: '#FBB724' }}>⚠ HTTP over Local Network Detected ({pageOrigin})</p>
-                  <p className="text-analog-text-muted leading-relaxed">
-                    Spotify requires <strong className="text-white">HTTPS</strong> for non-loopback callback URLs (HTTP is only permitted on <code className="text-white">127.0.0.1</code>).
-                  </p>
-                  <p className="text-analog-text-muted">
-                    If self-hosting across your network, use an HTTPS reverse proxy (e.g. Nginx, Traefik, Caddy, or Cloudflare Tunnel) or connect locally at <code className="text-white font-mono bg-analog-bg px-1 py-0.5 rounded">http://127.0.0.1:8080</code>.
-                  </p>
-                </div>
-              );
-            })()}
-
-            {/* Client credentials */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <div>
-                <label className="block text-xs text-analog-text-muted mb-1">
-                  Spotify Client ID {hasSpotifyClientId && <span className="text-sh-cyan font-normal">✓ saved</span>}
-                </label>
-                <input type="password" value={spotifyClientId} onChange={e => setSpotifyClientId(e.target.value)}
-                  placeholder={hasSpotifyClientId ? '•••••••••••••••• (saved)' : 'Client ID'}
-                  className="w-full bg-analog-bg border border-analog-border rounded px-3 py-2 text-sm text-white placeholder-analog-text-muted focus:outline-none focus:border-analog-accent transition-colors" />
-              </div>
-              <div>
-                <label className="block text-xs text-analog-text-muted mb-1">Spotify Client Secret</label>
-                <input type="password" value={spotifyClientSecret} onChange={e => setSpotifyClientSecret(e.target.value)}
-                  placeholder="Client Secret"
-                  className="w-full bg-analog-bg border border-analog-border rounded px-3 py-2 text-sm text-white placeholder-analog-text-muted focus:outline-none focus:border-analog-accent transition-colors" />
-              </div>
-            </div>
-
-            {/* Base URL override */}
-            <div>
-              <label className="block text-xs text-analog-text-muted mb-1">
-                App Base URL (Redirect URI base)
-                {hasSpotifyBaseUrl && <span className="ml-2 text-sh-cyan">✓ saved</span>}
-              </label>
-              <input type="text" value={spotifyBaseUrl} onChange={e => setSpotifyBaseUrl(e.target.value)}
-                placeholder="http://192.168.1.100:8080 — required if accessing via IP"
-                className="w-full bg-analog-bg border border-analog-border rounded px-3 py-2 text-sm text-white placeholder-analog-text-muted focus:outline-none focus:border-analog-accent transition-colors" />
-              <p className="text-xs text-analog-text-muted mt-1">
-                Register exactly{' '}
-                <code className="text-sh-cyan font-mono bg-analog-bg px-1.5 py-0.5 rounded text-xs select-all">
-                  {(spotifyBaseUrl.trim() || (pageOrigin.includes('localhost') ? pageOrigin.replace('localhost', '127.0.0.1') : pageOrigin) || 'http://127.0.0.1:8080').replace(/\/$/, '')}/api/spotify/callback
-                </code>{' '}
-                in your Spotify Dashboard.
-              </p>
-            </div>
-
-            <div className="flex items-center justify-between">
-              <SaveBtn onClick={handleSaveSpotify} saving={savingSpotify}
-                disabled={!spotifyClientId.trim() && !spotifyClientSecret.trim() && !spotifyBaseUrl.trim()}>
-                Save Spotify Credentials
-              </SaveBtn>
-              <StatusMsg text={spotifyCredsStatus} inline />
-            </div>
-
-            {/* Connect / Sync buttons */}
-            <div className="flex flex-wrap gap-3 pt-1">
-              {!user?.spotifyConnected ? (
-                <button onClick={handleConnectSpotify} disabled={savingSpotify}
-                  className="inline-flex items-center gap-2 px-4 py-2.5 font-semibold text-sm rounded transition-colors text-black disabled:opacity-50"
+                <button onClick={handleConnectSpotify}
+                  className="inline-flex items-center gap-2 px-4 py-2.5 font-semibold text-sm rounded transition-colors text-black"
                   style={{ background: '#1DB954', boxShadow: '0 0 15px rgba(29,185,84,0.2)' }}>
-                  {savingSpotify ? 'Saving & Connecting…' : 'Connect Spotify via OAuth'}
+                  Reconnect Spotify via OAuth
                 </button>
-              ) : (
-                <>
-                  <button onClick={handleConnectSpotify} disabled={savingSpotify}
-                    className="inline-flex items-center gap-2 px-4 py-2.5 font-semibold text-sm rounded transition-colors text-black disabled:opacity-50"
-                    style={{ background: '#1DB954', boxShadow: '0 0 15px rgba(29,185,84,0.2)' }}>
-                    {savingSpotify ? 'Saving & Connecting…' : 'Reconnect Spotify via OAuth'}
-                  </button>
-                  <button onClick={handleSpotifyFetch} disabled={spotifyFetching}
-                    className="px-4 py-2 border rounded text-sm font-medium transition-colors disabled:opacity-40"
-                    style={{ borderColor: '#1DB954', color: '#1DB954' }}>
-                    {spotifyFetching ? 'Syncing…' : 'Refresh Top Artists from Spotify'}
-                  </button>
-                </>
-              )}
-            </div>
+                <button onClick={handleSpotifyFetch} disabled={spotifyFetching}
+                  className="px-4 py-2 border rounded text-sm font-medium transition-colors disabled:opacity-40"
+                  style={{ borderColor: '#1DB954', color: '#1DB954' }}>
+                  {spotifyFetching ? 'Refreshing…' : 'Refresh from Spotify'}
+                </button>
+              </>
+            )}
+          </div>
 
-            {/* Which Spotify data sources to import (advanced) */}
-            <div className="pt-2">
-              <p className="text-xs text-analog-text-muted mb-2">
-                All your Spotify data is fetched automatically on refresh. Tune which signals dominate under <strong className="text-white">&quot;Taste focus&quot;</strong> (Step 4).
-              </p>
-              <button onClick={() => setShowAdvancedSources(!showAdvancedSources)}
-                className="w-full flex items-center justify-between px-3 py-2 text-xs rounded-lg border border-analog-border text-analog-text-muted hover:text-white transition-colors cursor-pointer">
-                <span className="flex items-center gap-2">
-                  <span className={`inline-block transition-transform ${showAdvancedSources ? 'rotate-90' : ''}`}>▸</span>
-                  Advanced — data sources to import
-                  <span className="text-sh-cyan font-normal">({spotifySources.length}/{SPOTIFY_SOURCES.length} on)</span>
-                </span>
-                <span>{showAdvancedSources ? 'Hide' : 'Show'}</span>
-              </button>
-              {showAdvancedSources && (
-                <div className="mt-2">
-                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                    {SPOTIFY_SOURCES.map(s => {
-                      const on = spotifySources.includes(s.key);
-                      return (
-                        <button key={s.key} onClick={() => toggleSpotifySource(s.key)}
-                          className={`px-3 py-2 text-xs rounded-lg border transition-all text-left flex items-center gap-2 cursor-pointer ${
-                            on ? 'border-analog-accent text-white' : 'border-analog-border text-analog-text-muted hover:text-white'
-                          }`}
-                          style={on ? { background: 'rgba(255,0,110,0.1)', boxShadow: '0 0 0 1px rgba(255,0,110,0.3)' } : {}}>
-                          <span className={`w-3 h-3 rounded-sm border flex items-center justify-center text-[9px] shrink-0 ${
-                            on ? 'bg-analog-accent border-analog-accent text-white' : 'border-analog-border'
-                          }`}>
-                            {on ? '✓' : ''}
-                          </span>
-                          {s.label}
-                        </button>
-                      );
-                    })}
-                  </div>
-                  <p className="text-xs text-analog-text-muted mt-1.5">
-                    Unticked sources are <strong className="text-white">skipped entirely</strong> on the next refresh — no API calls are made for them and they contribute no signals. All on by default; most people never need to touch this.
-                  </p>
-                </div>
-              )}
-            </div>
-
-            {/* Clear artists */}
-            <div className="flex items-center justify-between rounded-lg px-4 py-3 border" style={{ borderColor: 'rgba(255,61,61,0.3)', background: 'rgba(255,61,61,0.05)' }}>
-              <span className="text-xs text-analog-text-muted">
-                <strong className="text-red-400">Clear all imported Spotify artists</strong> (API + file uploads). Your connection stays — just re-fetch to import again.
-              </span>
-              <button onClick={() => handleClearSource('spotify')}
-                className="px-3 py-1.5 text-xs font-semibold rounded border transition-colors whitespace-nowrap ml-3"
-                style={{ borderColor: '#FF3D3D', color: '#FF3D3D' }}
-                onMouseEnter={e => (e.currentTarget.style.background = 'rgba(255,61,61,0.15)')}
-                onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}>
-                Clear Spotify artists
-              </button>
-            </div>
+          {/* Clear artists */}
+          <div className="flex items-center justify-between rounded-lg px-4 py-3 border" style={{ borderColor: 'rgba(255,61,61,0.3)', background: 'rgba(255,61,61,0.05)' }}>
+            <span className="text-xs text-analog-text-muted">
+              <strong className="text-red-400">Clear all imported Spotify artists</strong> (followed / saved / liked signals). Your connection stays — just refresh to re-import.
+            </span>
+            <button onClick={handleClearData}
+              className="px-3 py-1.5 text-xs font-semibold rounded border transition-colors whitespace-nowrap ml-3"
+              style={{ borderColor: '#FF3D3D', color: '#FF3D3D' }}
+              onMouseEnter={e => (e.currentTarget.style.background = 'rgba(255,61,61,0.15)')}
+              onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}>
+              Clear Spotify artists
+            </button>
           </div>
         </Section>
 
-        {/* ═══ STEP 3: AI Provider ══════════════════════════════════════════════ */}
+        {/* ═══ STEP 2: Tuning ═══════════════════════════════════════════════════ */}
         <Section
-          num="03"
-          title="AI Provider"
-          collapsed={collapsed.provider}
-          onToggle={() => toggle('provider')}
-          statusBadge={
-            hasKey
-              ? <Badge color="cyan">{selectedProvider} · key saved</Badge>
-              : <Badge color="dim">{selectedProvider} · no key</Badge>
-          }
-        >
-          {/* Provider selector */}
-          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-            {PROVIDER_IDS.map(p => {
-              const saved = user?.savedProviders?.includes(p);
-              const isFree = PROVIDER_META[p].cheapModels.some(m => m.free);
-              return (
-                <button key={p} onClick={() => setSelectedProvider(p)}
-                  className={`px-3 py-2.5 border rounded-lg text-xs text-left transition-all relative ${
-                    selectedProvider === p
-                      ? 'border-analog-accent text-white font-semibold'
-                      : 'bg-analog-bg border-analog-border hover:border-analog-accent text-analog-text-muted hover:text-white'
-                  }`}
-                  style={selectedProvider === p ? { background: 'rgba(255,0,110,0.12)', boxShadow: '0 0 15px rgba(255,0,110,0.15)' } : {}}>
-                  {p}
-                  {isFree && <span className="ml-1 text-[9px] text-sh-cyan">(free)</span>}
-                  {saved && <span className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full" style={{ background: '#00E5FF', boxShadow: '0 0 4px #00E5FF' }} />}
-                </button>
-              );
-            })}
-          </div>
-
-          {/* Provider setup instructions */}
-          <InstructionCard color="pink" steps={meta.setupSteps.map((s, i) => <span key={i}>{s}</span>)}>
-            <a href={meta.setupLink} target="_blank" rel="noopener noreferrer"
-              className="inline-flex items-center gap-1 text-analog-accent hover:underline text-xs font-semibold mt-1">
-              Open {selectedProvider} Console ↗
-            </a>
-            {meta.keyNote && <p className="text-xs mt-1" style={{ color: '#00E5FF' }}>{meta.keyNote}</p>}
-          </InstructionCard>
-
-          {/* Model — free text with suggestions */}
-          <div>
-            <label className="block text-xs text-analog-text-muted mb-1.5">Model</label>
-            <input type="text" value={modelInput} onChange={e => setModelInput(e.target.value)}
-              placeholder="Enter model name"
-              className="w-full bg-analog-bg border border-analog-border rounded px-3 py-2 text-sm text-white placeholder-analog-text-muted focus:outline-none focus:border-analog-accent transition-colors" />
-            {/* Model suggestion chips */}
-            <div className="flex flex-wrap gap-2 mt-2">
-              {meta.cheapModels.map(m => (
-                <button key={m.id} onClick={() => setModelInput(m.id)}
-                  className={`text-xs px-2.5 py-1 rounded border transition-colors text-left ${
-                    modelInput === m.id
-                      ? 'border-analog-accent text-white'
-                      : 'border-analog-border text-analog-text-muted hover:border-analog-accent hover:text-white'
-                  }`}
-                  style={modelInput === m.id ? { background: 'rgba(255,0,110,0.1)' } : {}}>
-                  {m.free && <span className="mr-1" style={{ color: '#00E5FF' }}>★</span>}
-                  {m.label}
-                </button>
-              ))}
-            </div>
-            <p className="text-xs text-analog-text-muted mt-1.5">
-              <span style={{ color: '#00E5FF' }}>★</span> = free tier available
-            </p>
-          </div>
-
-          {/* API Key */}
-          <div>
-            <label className="block text-xs text-analog-text-muted mb-1.5">
-              {meta.keyLabel}
-              {hasKey && <span className="ml-2 font-normal" style={{ color: '#00E5FF' }}>✓ Saved</span>}
-            </label>
-            <div className="flex gap-2">
-              <input type={meta.isUrlField ? 'text' : 'password'} value={apiKeyInput}
-                onChange={e => setApiKeyInput(e.target.value)}
-                placeholder={hasKey ? '•••••••••••• (saved — enter new value to update)' : meta.keyPlaceholder}
-                className="flex-1 bg-analog-bg border border-analog-border rounded px-3 py-2 text-sm text-white placeholder-analog-text-muted focus:outline-none focus:border-analog-accent transition-colors" />
-              <SaveBtn onClick={handleSaveProviderKey} saving={keySaving} disabled={!apiKeyInput.trim()}>Save</SaveBtn>
-            </div>
-            <StatusMsg text={keyStatus} />
-          </div>
-
-          {/* RPM */}
-          <div>
-            <div className="flex items-center justify-between mb-2">
-              <label className="text-xs text-analog-text-muted">Rate Limit</label>
-              <span className="text-xs font-mono text-white">{rpmLabel} <span className="text-analog-text-muted">({delayMsDisplay})</span></span>
-            </div>
-            <div className="flex items-center gap-3">
-              <input type="number" min={0} max={600} value={rpm === 0 ? '' : rpm}
-                onChange={e => setRpm(e.target.value === '' ? 0 : Math.max(0, parseInt(e.target.value) || 0))}
-                placeholder="∞"
-                className="w-28 bg-analog-bg border border-analog-border rounded px-3 py-2 text-sm text-white placeholder-analog-text-muted focus:outline-none focus:border-analog-accent transition-colors" />
-              <span className="text-xs text-analog-text-muted">requests/min (leave blank for unlimited)</span>
-            </div>
-            <div className="flex flex-wrap gap-2 mt-2">
-              {[[0, 'Unlimited'], [5, '5 RPM (safe default)'], [15, '15 RPM (Gemini free)'], [20, '20 RPM (OpenRouter free)'], [60, '60 RPM (OpenAI free)']].map(([val, label]) => (
-                <button key={val} onClick={() => setRpm(val as number)}
-                  className={`text-xs px-2.5 py-1 rounded border transition-colors ${
-                    rpm === val ? 'border-analog-accent text-white' : 'border-analog-border text-analog-text-muted hover:border-analog-accent hover:text-white'
-                  }`}
-                  style={rpm === val ? { background: 'rgba(255,0,110,0.1)' } : {}}>
-                  {label}
-                </button>
-              ))}
-            </div>
-            <p className="text-xs text-analog-text-muted mt-2 leading-relaxed">
-              ℹ A normal <strong className="text-white">Generate</strong> run makes <strong className="text-white">1 LLM call</strong>, so a high limit isn&apos;t needed —
-              this setting just inserts a small delay between runs to protect your quota. <strong className="text-white">5/min is a safe default</strong>; raise it (or leave blank for unlimited) if you&apos;re running discoveries back-to-back. Some modes add a short analysis pass first (Deep Roots &amp; Fresh Ears detect your genre lane; Branch Out clusters recent additions; Genre Dive&apos;s auto-suggest tags your top artists).
-            </p>
-          </div>
-        </Section>
-
-        {/* ═══ STEP 4: Tuning ═══════════════════════════════════════════════════ */}
-        <Section
-          num="04"
+          num="02"
           title="Discovery Tuning"
           collapsed={collapsed.tuning}
           onToggle={() => toggle('tuning')}
@@ -1361,6 +633,17 @@ OUTPUT JSON SCHEMA:
             </Badge>
           }
         >
+          <div className="space-y-5">
+            {scheduleLocked && (
+              <div className="rounded-lg p-3 text-xs leading-relaxed" style={{ background: 'rgba(251,191,36,0.08)', border: '1px solid rgba(251,191,36,0.3)' }}>
+                <p className="font-semibold" style={{ color: '#FBB724' }}>🔒 Tuning is locked</p>
+                <p className="text-analog-text-muted mt-1">
+                  Automatic refreshes are on, so these controls reflect the settings saved when the schedule was
+                  enabled. Turn the schedule off in the panel below to adjust them again.
+                </p>
+              </div>
+            )}
+            <div className={`space-y-5 ${scheduleLocked ? 'opacity-60 pointer-events-none select-none' : ''}`}>
           {/* Obscurity */}
           <div>
             <div className="flex justify-between items-baseline mb-2">
@@ -1404,40 +687,6 @@ OUTPUT JSON SCHEMA:
             </div>
 
             {/* Mode-specific controls */}
-            {discoveryMode === 'branch-out' && (
-              <div className="mt-2 rounded-lg p-3 border" style={{ borderColor: 'rgba(0,229,255,0.25)', background: 'rgba(0,229,255,0.04)' }}>
-                <p className="text-xs text-analog-text-muted mb-2">
-                  Seeds come from artists you added or actively played in the last ~90 days. Cluster them into themes first, then pick one — so the output follows a single lane instead of a jumble.
-                </p>
-                <button onClick={handleAnalyzeBranch} disabled={branchAnalyzing || !hasKey}
-                  className="px-3 py-1.5 text-xs font-semibold rounded border transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-                  style={{ borderColor: '#00E5FF', color: '#00E5FF', background: 'rgba(0,229,255,0.08)' }}>
-                  {branchAnalyzing ? 'Analysing…' : (branchThemes.length ? '↻ Re-analyse recent additions' : 'Analyse recent additions')}
-                </button>
-                <StatusMsg text={branchStatus} />
-                {branchThemes.length > 0 && (
-                  <div className="mt-2 space-y-1.5">
-                    {branchThemes.map(t => {
-                      const on = branchThemeId === t.id;
-                      return (
-                        <button key={t.id} onClick={() => setBranchThemeId(t.id)}
-                          className={`w-full text-left px-3 py-2 rounded-lg border transition-all text-xs ${
-                            on ? 'border-analog-accent text-white' : 'border-analog-border text-analog-text-muted hover:text-white'
-                          }`}
-                          style={on ? { background: 'rgba(255,0,110,0.1)', boxShadow: '0 0 0 1px rgba(255,0,110,0.4)' } : {}}>
-                          <span className="block font-semibold">{on ? '✓ ' : ''}{t.label}</span>
-                          <span className="block text-[10px] mt-0.5 opacity-70">{t.description}</span>
-                          <span className="block text-[10px] mt-1 opacity-60 font-mono">
-                            {t.artists.slice(0, 6).join(' · ')}{t.artists.length > 6 ? ` +${t.artists.length - 6} more` : ''}
-                          </span>
-                        </button>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-            )}
-
             {discoveryMode === 'rabbit-hole' && (
               <div className="mt-2 rounded-lg p-3 border" style={{ borderColor: 'rgba(0,229,255,0.25)', background: 'rgba(0,229,255,0.04)' }}>
                 <p className="text-xs text-analog-text-muted mb-2">
@@ -1479,17 +728,12 @@ OUTPUT JSON SCHEMA:
 
             {discoveryMode === 'deep-roots' && (
               <p className="text-xs text-analog-text-muted mt-2">
-                Lane is detected automatically from your <strong className="text-white">all-time</strong> listening history.
-              </p>
-            )}
-            {discoveryMode === 'fresh-ears' && (
-              <p className="text-xs text-analog-text-muted mt-2">
-                Lane is detected from the <strong className="text-white">last ~6 months</strong> of listening — your current ear wins.
+                Lane is detected automatically from your <strong className="text-white">all-time</strong> pool of liked, saved, and followed artists.
               </p>
             )}
             {discoveryMode === 'album-quest' && (
               <p className="text-xs text-analog-text-muted mt-2">
-                Full-album recommendations, each verified on Spotify. This is the mode behind the quick-album button below.
+                Full-album recommendations, each verified on Spotify. Lower the quantity (even to 1) for a quick single-album dive.
               </p>
             )}
             {discoveryMode === 'genre-dive' && (
@@ -1503,7 +747,7 @@ OUTPUT JSON SCHEMA:
           </div>
 
           {/* Genre focus — only relevant to Genre Dive; every other mode picks
-              its own lane (auto-detected, themed, or single-artist). */}
+              its own lane (auto-detected or single-artist). */}
           {discoveryMode === 'genre-dive' && (
           <div>
             <div className="flex items-baseline justify-between mb-2">
@@ -1513,7 +757,7 @@ OUTPUT JSON SCHEMA:
               </span>
             </div>
               <div className="flex items-center gap-2 mb-2">
-                <button onClick={handleSuggestGenres} disabled={genreSuggesting || !hasKey}
+                <button onClick={handleSuggestGenres} disabled={genreSuggesting || !aiConfigured}
                   className="px-3 py-1.5 text-xs font-semibold rounded border transition-colors disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap"
                   style={{ borderColor: '#00E5FF', color: '#00E5FF', background: 'rgba(0,229,255,0.08)' }}>
                   {genreSuggesting ? 'Detecting…' : '✨ Auto-suggest my genres'}
@@ -1605,11 +849,11 @@ OUTPUT JSON SCHEMA:
               <label className="block text-sm font-medium text-white mb-2">
                 Quantity: <span style={{ color: '#FF006E' }}>{quantity}</span>
               </label>
-              <input type="range" min={outputFormat === 'tracks' ? 10 : 5} max={outputFormat === 'tracks' ? 50 : 20}
-                step={5} value={quantity} onChange={e => setQuantity(Number(e.target.value))}
+              <input type="range" min={1} max={outputFormat === 'tracks' ? 50 : 20}
+                step={1} value={quantity} onChange={e => setQuantity(Number(e.target.value))}
                 className="w-full mt-2" style={{ accentColor: '#FF006E' }} />
               <div className="flex justify-between text-xs text-analog-text-muted mt-1 font-mono">
-                <span>{outputFormat === 'tracks' ? 10 : 5}</span><span>{outputFormat === 'tracks' ? 50 : 20}</span>
+                <span>1</span><span>{outputFormat === 'tracks' ? 50 : 20}</span>
               </div>
             </div>
           </div>
@@ -1639,57 +883,175 @@ OUTPUT JSON SCHEMA:
                 : '🔒 Private playlists are unlisted and hidden from search & profile.'}
             </p>
           </div>
-        </Section>
-
-        {/* ═══ STEP 5: Schedule (Coming Soon) ══════════════════════════════════ */}
-        <div className="relative" aria-disabled="true">
-          {/* Overlay */}
-          <div className="absolute inset-0 z-10 rounded-xl" style={{ background: 'rgba(7,7,26,0.6)', backdropFilter: 'blur(1px)' }} />
-          <div className="bg-analog-card border border-analog-border rounded-xl overflow-hidden opacity-50">
-            <div className="px-6 py-4 flex items-center gap-3">
-              <span className="font-mono text-sm font-bold shrink-0" style={{ color: '#6B5E9B' }}>05</span>
-              <span className="font-semibold text-analog-text-muted">Scheduled Refreshes</span>
-              <div className="flex-1" />
-              <span className="text-xs px-2.5 py-1 rounded-full font-mono border"
-                style={{ color: '#6B5E9B', borderColor: '#27245A', background: 'rgba(39,36,90,0.4)' }}>
-                Coming Soon
-              </span>
-            </div>
-            <div className="px-6 pb-6 pt-3 space-y-3.5 border-t border-analog-border">
-              <p className="text-xs text-analog-text-muted">
-                Automatically re-run your discovery on a schedule. Will refresh Last.fm / Spotify data first,
-                then generate new recommendations — never suggesting anything you&apos;ve already received.
-              </p>
-              <div className="grid grid-cols-3 gap-3 opacity-60">
-                {['Daily', 'Weekly', 'Monthly'].map(label => (
-                  <button key={label} disabled
-                    className="py-2.5 text-sm border border-analog-border rounded-lg text-analog-text-muted cursor-not-allowed">
-                    {label}
-                  </button>
-                ))}
-              </div>
             </div>
           </div>
-        </div>
+        </Section>
 
-        {/* ═══ STEP 6: Generate ════════════════════════════════════════════════ */}
+        {/* ═══ STEP 3: Scheduled Refreshes ═══════════════════════════════════ */}
+        <Section
+          num="03"
+          title="Scheduled Refreshes"
+          collapsed={collapsed.schedule}
+          onToggle={() => toggle('schedule')}
+          statusBadge={
+            scheduleEnabled
+              ? <Badge color="cyan">{scheduleSummary}</Badge>
+              : <Badge color="dim">Off</Badge>
+          }
+        >
+          <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="text-sm font-semibold text-white">Automatic refreshes</p>
+                <p className="text-xs text-analog-text-muted mt-0.5">
+                  {scheduleEnabled
+                    ? 'On — each run refreshes your Spotify signals, generates fresh discoveries and updates your playlist.'
+                    : 'Off — generate manually whenever you like. Enabling locks the tuning + Generate controls to the settings saved right now.'}
+                </p>
+              </div>
+              <button onClick={() => setScheduleEnabled(e => !e)} role="switch" aria-checked={scheduleEnabled}
+                className="relative w-12 h-6 rounded-full transition-colors shrink-0 cursor-pointer"
+                style={{ background: scheduleEnabled ? '#00E5FF' : '#27245A' }}>
+                <span className={`absolute top-0.5 w-5 h-5 rounded-full bg-white transition-all ${scheduleEnabled ? 'left-6' : 'left-0.5'}`} />
+              </button>
+            </div>
+
+              {/* Frequency */}
+              <div>
+                <div className="flex items-baseline justify-between mb-2">
+                  <label className="text-sm font-medium text-white">Frequency</label>
+                  <span className="text-xs font-mono" style={{ color: '#00E5FF' }}>
+                    {scheduleInterval === 'daily' ? 'Every day' : scheduleInterval === 'weekly' ? 'Every week' : 'Every month'}
+                  </span>
+                </div>
+                <div className="flex bg-analog-bg border border-analog-border rounded-lg p-1 max-w-sm">
+                  {SCHEDULE_INTERVALS.map(iv => (
+                    <button key={iv} onClick={() => setScheduleInterval(iv)}
+                      className={`flex-1 py-2 text-sm rounded transition-colors capitalize ${
+                        scheduleInterval === iv ? 'text-white' : 'text-analog-text-muted hover:text-white'
+                      }`}
+                      style={scheduleInterval === iv ? { background: 'rgba(255,0,110,0.15)', boxShadow: '0 0 0 1px rgba(255,0,110,0.4)' } : {}}>
+                      {iv}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Day of week / day of month */}
+              {scheduleInterval !== 'daily' && (
+                <div>
+                  <div className="flex items-baseline justify-between mb-2">
+                    <label className="text-sm font-medium text-white">
+                      {scheduleInterval === 'weekly' ? 'Day of week' : 'Day of month'}
+                    </label>
+                    <span className="text-xs font-mono" style={{ color: '#FF006E' }}>
+                      {scheduleInterval === 'weekly'
+                        ? (WEEKDAY_LABELS[scheduleDay - 1] ?? 'Monday')
+                        : `The ${scheduleDay}${scheduleDay === 1 ? 'st' : scheduleDay === 2 ? 'nd' : scheduleDay === 3 ? 'rd' : 'th'}`}
+                    </span>
+                  </div>
+                  {scheduleInterval === 'weekly' ? (
+                    <div className="flex flex-wrap gap-1.5">
+                      {WEEKDAY_LABELS.map((day, i) => {
+                        const d = i + 1;
+                        const on = scheduleDay === d;
+                        return (
+                          <button key={d} onClick={() => setScheduleDay(d)}
+                            className={`text-xs px-2.5 py-1 rounded border transition-colors ${
+                              on ? 'border-analog-accent text-white' : 'border-analog-border text-analog-text-muted hover:border-analog-accent hover:text-white'
+                            }`}
+                            style={on ? { background: 'rgba(255,0,110,0.1)' } : {}}>
+                            {day.slice(0, 3)}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <div className="flex flex-wrap gap-1.5">
+                      {Array.from({ length: 28 }, (_, i) => i + 1).map(d => {
+                        const on = scheduleDay === d;
+                        return (
+                          <button key={d} onClick={() => setScheduleDay(d)}
+                            className={`text-xs w-8 py-1 rounded border transition-colors text-center ${
+                              on ? 'border-analog-accent text-white' : 'border-analog-border text-analog-text-muted hover:border-analog-accent hover:text-white'
+                            }`}
+                            style={on ? { background: 'rgba(255,0,110,0.1)' } : {}}>
+                            {d}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                  <p className="text-xs text-analog-text-muted mt-1.5">
+                    {scheduleInterval === 'monthly' ? 'Runs on the 28th of every month — avoids months that are too short.' : 'Every selected weekday.'}
+                  </p>
+                </div>
+              )}
+
+              {/* Time of day */}
+              <div>
+                <div className="flex justify-between items-baseline mb-2">
+                  <label className="text-sm font-medium text-white">Time of day</label>
+                  <span className="text-sm font-mono" style={{ color: '#FF006E' }}>{String(scheduleHour).padStart(2, '0')}:00</span>
+                </div>
+                <input type="range" min={0} max={23} value={scheduleHour} onChange={e => setScheduleHour(Number(e.target.value))}
+                  className="w-full" style={{ accentColor: '#FF006E' }} />
+                <div className="flex flex-wrap gap-2 mt-2">
+                  {[0, 6, 9, 12, 18, 22].map(h => (
+                    <button key={h} onClick={() => setScheduleHour(h)}
+                      className={`text-xs px-2.5 py-1 rounded border transition-colors ${
+                        scheduleHour === h ? 'border-analog-accent text-white' : 'border-analog-border text-analog-text-muted hover:border-analog-accent hover:text-white'
+                      }`}
+                      style={scheduleHour === h ? { background: 'rgba(255,0,110,0.1)' } : {}}>
+                      {String(h).padStart(2, '0')}:00
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Next run + Run now */}
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 rounded-lg px-4 py-3 border" style={{ borderColor: 'rgba(0,229,255,0.25)', background: 'rgba(0,229,255,0.04)' }}>
+                <div>
+                  <p className="text-sm font-medium text-white">Next automatic run</p>
+                  <p className="text-xs font-mono mt-0.5" style={{ color: scheduleEnabled ? '#00E5FF' : '#6B5E9B' }}>
+                    {scheduleEnabled
+                      ? (nextRunLabel ?? '…')
+                      : 'Schedule is off'}
+                  </p>
+                </div>
+                <button onClick={handleRunNow} disabled={runNowBusy || !hasHistory || !aiConfigured}
+                  className="px-4 py-2 text-sm font-semibold rounded border transition-colors disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap"
+                  style={{ borderColor: '#00E5FF', color: '#00E5FF', background: 'rgba(0,229,255,0.08)' }}>
+                  {runNowBusy ? 'Running…' : '▶ Run now'}
+                </button>
+              </div>
+              <p className="text-xs text-analog-text-muted">
+                Run now forces a full run with the current settings — refresh signals → generate → push to Spotify playlist.
+                The server must stay running for scheduled runs to fire.
+              </p>
+          </Section>
+
+        {/* ═══ STEP 4: Generate ════════════════════════════════════════════════ */}
         <div className="space-y-5">
           {!hasHistory && (
             <div className="text-center py-3 px-4 rounded-lg text-sm" style={{ background: 'rgba(251,191,36,0.08)', border: '1px solid rgba(251,191,36,0.25)', color: '#FBB724' }}>
-              ⚠ Connect Last.fm or Spotify (Steps 1–2) to build your listening profile first
+              ⚠ Connect Spotify (Step 1) to build your taste profile first
             </div>
           )}
-          {!hasKey && (
+          {!aiConfigured && (
             <div className="text-center py-3 px-4 rounded-lg text-sm" style={{ background: 'rgba(251,191,36,0.08)', border: '1px solid rgba(251,191,36,0.25)', color: '#FBB724' }}>
-              ⚠ Save an API key in Step 3 before generating
+              ⚠ No AI provider configured — an admin needs to set it up in the Admin panel before generating
             </div>
           )}
-
-          <button onClick={() => handleGenerate()} disabled={generating || !hasHistory || !hasKey}
+          {scheduleLocked && (
+            <div className="text-center py-3 px-4 rounded-lg text-sm" style={{ background: 'rgba(251,191,36,0.08)', border: '1px solid rgba(251,191,36,0.25)', color: '#FBB724' }}>
+              🔒 Automatic refreshes are on — Generate is locked to the saved settings. Use &quot;Run now&quot; above to force a run.
+            </div>
+          )}
+          <button onClick={() => handleGenerate()} disabled={generating || !hasHistory || !aiConfigured || scheduleLocked}
             className={`w-full py-5 rounded-xl font-bold text-lg transition-all flex items-center justify-center gap-3 group relative overflow-hidden ${
-              generating || !hasHistory || !hasKey ? 'opacity-40 cursor-not-allowed' : ''
+              generating || !hasHistory || !aiConfigured || scheduleLocked ? 'opacity-40 cursor-not-allowed' : ''
             }`}
-            style={(!generating && hasHistory && hasKey) ? {
+            style={(!generating && hasHistory && aiConfigured && !scheduleLocked) ? {
               background: 'linear-gradient(90deg, #FF006E, #9945FF)',
               boxShadow: '0 0 30px rgba(255,0,110,0.35), 0 0 60px rgba(153,69,255,0.15)',
               color: 'white',
@@ -1702,18 +1064,8 @@ OUTPUT JSON SCHEMA:
             {generating ? 'GENERATING…' : 'GENERATE DISCOVERY PLAYLIST'}
           </button>
 
-          <button onClick={handleQuickAlbum} disabled={generating || !hasHistory || !hasKey}
-            className={`w-full py-3 rounded-xl font-semibold text-sm transition-all flex items-center justify-center gap-2 ${
-              generating || !hasHistory || !hasKey ? 'opacity-40 cursor-not-allowed' : 'hover:scale-[1.01]'
-            }`}
-            style={{ border: '1px solid rgba(0,229,255,0.4)', color: '#00E5FF', background: 'rgba(0,229,255,0.06)' }}>
-            <svg className="w-4 h-4 fill-current" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 14.5v-9l6 4.5-6 4.5z"/></svg>
-            ▶ Play me an album I haven&apos;t heard before
-            <span className="text-[10px] opacity-60 font-normal">(one click — 5 albums)</span>
-          </button>
-
           {/* Prompt preview toggle */}
-          {hasHistory && hasKey && (
+          {hasHistory && aiConfigured && !scheduleLocked && (
             <button onClick={() => setShowPrompt(p => !p)}
               className="w-full text-xs text-analog-text-muted hover:text-analog-text transition-colors py-1 flex items-center justify-center gap-1">
               <span>{showPrompt ? '▲' : '▼'}</span>
@@ -1732,7 +1084,7 @@ OUTPUT JSON SCHEMA:
           )}
         </div>
 
-        {/* ═══ STEP 6: Results + Log ════════════════════════════════════════════ */}
+        {/* ═══ STEP 5: Results + Log ════════════════════════════════════════════ */}
         {(logs.length > 0 || results.length > 0) && (
           <section className="space-y-4">
             {/* Results (First) */}
@@ -1794,7 +1146,7 @@ OUTPUT JSON SCHEMA:
 
                 <div className="px-6 py-3.5 border-t border-analog-border">
                   <p className="text-xs text-analog-text-muted">
-                    Each result has its Spotify player embedded inline — just press play. Requires Spotify to be connected (Step 2).
+                    Each result has its Spotify player embedded inline — just press play. Requires Spotify to be connected (Step 1).
                   </p>
                 </div>
 
@@ -1818,9 +1170,9 @@ OUTPUT JSON SCHEMA:
                         {syncing ? 'Syncing…' : '↑ Push to Spotify'}
                       </button>
                     )}
-                    <button onClick={() => handleGenerate()} disabled={generating}
-                      className="px-5 py-2.5 border border-analog-border hover:border-analog-accent text-analog-text-muted hover:text-white text-sm rounded-lg transition-colors">
-                      Regenerate
+                    <button onClick={() => handleGenerate()} disabled={generating || scheduleLocked}
+                      className="px-5 py-2.5 border border-analog-border hover:border-analog-accent text-analog-text-muted hover:text-white text-sm rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
+                      {scheduleLocked ? '🔒 Regenerate' : 'Regenerate'}
                     </button>
                   </div>
                 </div>
@@ -1895,7 +1247,7 @@ OUTPUT JSON SCHEMA:
                 <p className="font-mono text-[11px] leading-relaxed whitespace-pre-wrap" style={{ background: '#0E0E28', border: '1px solid rgba(107,94,155,0.3)', borderRadius: 8, padding: '10px 12px' }}>
                   {infoModal.thesis}
                 </p>
-                <p className="text-[10px] mt-1 opacity-60">Placeholders like [LANE] / [THEME] are filled with your real data at generate time.</p>
+                <p className="text-[10px] mt-1 opacity-60">Placeholders like [LANE] / [GENRES] / [ARTIST] are filled with your real data at generate time.</p>
               </div>
               <div>
                 <p className="font-semibold text-white mb-1">Best for</p>
@@ -1945,59 +1297,14 @@ function ChevronIcon({ collapsed }: { collapsed: boolean }) {
   );
 }
 
-function Badge({ color, children }: { color: 'cyan' | 'pink' | 'dim'; children: React.ReactNode }) {
+function Badge({ color, children }: { color: 'cyan' | 'pink' | 'dim' | 'amber'; children: React.ReactNode }) {
   const styles: Record<string, React.CSSProperties> = {
     cyan:  { color: '#00E5FF', background: 'rgba(0,229,255,0.1)',  border: '1px solid rgba(0,229,255,0.25)' },
     pink:  { color: '#FF006E', background: 'rgba(255,0,110,0.1)',  border: '1px solid rgba(255,0,110,0.25)' },
     dim:   { color: '#6B5E9B', background: 'rgba(107,94,155,0.1)', border: '1px solid rgba(107,94,155,0.2)' },
+    amber: { color: '#FBB724', background: 'rgba(251,191,36,0.1)', border: '1px solid rgba(251,191,36,0.3)' },
   };
   return <span className="text-xs px-2 py-0.5 rounded-full font-mono whitespace-nowrap" style={styles[color]}>{children}</span>;
-}
-
-function InstructionCard({ color, steps, children }: {
-  color: 'red' | 'green' | 'pink'; steps: React.ReactNode[]; children?: React.ReactNode;
-}) {
-  const accent = color === 'red' ? '#D51007' : color === 'green' ? '#1DB954' : '#FF006E';
-  return (
-    <div className="rounded-lg p-4 text-xs space-y-2"
-      style={{ background: '#0E0E28', border: `1px solid rgba(107,94,155,0.3)`, borderLeft: `3px solid ${accent}` }}>
-      <ol className="list-none space-y-1.5 text-analog-text-muted">
-        {steps.map((s, i) => (
-          <li key={i} className="flex gap-2">
-            <span className="shrink-0 font-mono" style={{ color: accent }}>{i + 1}.</span>
-            <span>{s}</span>
-          </li>
-        ))}
-      </ol>
-      {children}
-    </div>
-  );
-}
-
-function SectionLabel({ text }: { text: string }) {
-  return <p className="text-xs font-semibold text-analog-text-muted uppercase tracking-wide">{text}</p>;
-}
-
-function ExtLink({ href, children }: { href: string; children: React.ReactNode }) {
-  return (
-    <a href={href} target="_blank" rel="noopener noreferrer"
-      onClick={(e) => e.stopPropagation()}
-      className="font-semibold hover:underline" style={{ color: '#FF006E' }}>
-      {children}
-    </a>
-  );
-}
-
-function SaveBtn({ onClick, saving, disabled, children }: {
-  onClick: () => void; saving: boolean; disabled?: boolean; children: React.ReactNode;
-}) {
-  return (
-    <button onClick={onClick} disabled={saving || disabled}
-      className="px-4 py-2 border border-analog-border hover:border-analog-accent disabled:opacity-40 disabled:cursor-not-allowed text-white font-medium text-sm rounded transition-colors whitespace-nowrap"
-      style={(!disabled && !saving) ? { background: 'rgba(255,0,110,0.08)' } : {}}>
-      {saving ? 'Saving…' : children}
-    </button>
-  );
 }
 
 function StatusMsg({ text, inline }: { text: string; inline?: boolean }) {
@@ -2010,24 +1317,4 @@ function StatusMsg({ text, inline }: { text: string; inline?: boolean }) {
     </p>
   );
   return inline ? <span>{el}</span> : el;
-}
-
-function DropZone({ active, onDragOver, onDragLeave, onDrop, onClick, children }: {
-  active: boolean; onDragOver: () => void; onDragLeave: () => void;
-  onDrop: (files: File[]) => void; onClick: () => void; children: React.ReactNode;
-}) {
-  return (
-    <div
-      onDragOver={e => { e.preventDefault(); onDragOver(); }}
-      onDragLeave={onDragLeave}
-      onDrop={e => { e.preventDefault(); const files = Array.from(e.dataTransfer.files); if (files.length) onDrop(files); }}
-      onClick={onClick}
-      className="border border-dashed rounded-lg p-4 cursor-pointer transition-all"
-      style={{
-        borderColor: active ? '#FF006E' : 'rgba(107,94,155,0.4)',
-        background: active ? 'rgba(255,0,110,0.05)' : 'transparent',
-      }}>
-      {children}
-    </div>
-  );
 }
