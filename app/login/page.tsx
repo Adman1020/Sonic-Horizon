@@ -26,8 +26,7 @@ export default function Login() {
         </a>
 
         <p className="text-analog-text-muted text-xs text-center mt-6 leading-relaxed">
-          Discovery is driven only by artists you explicitly follow, save, or like
-          on Spotify — we never read your listening history. New accounts require
+          Discovery is driven by artists you follow, save, or like. We also read your recent plays to avoid recommending things you've just heard. New accounts require
           admin approval.
         </p>
       </div>

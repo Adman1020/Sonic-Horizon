@@ -43,6 +43,7 @@ function initializeSchema(db: Database): void {
       "addedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
       "signals" TEXT NOT NULL DEFAULT '{}',
       "lastSeenAt" DATETIME,
+      "lastPlayedAt" DATETIME,
       CONSTRAINT "KnownArtist_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
       UNIQUE("userId", "artistName")
     );
@@ -168,6 +169,9 @@ function initializeSchema(db: Database): void {
   } catch { /* Column already exists */ }
   try {
     db.exec(`ALTER TABLE "KnownArtist" ADD COLUMN "lastSeenAt" DATETIME;`);
+  } catch { /* Column already exists */ }
+  try {
+    db.exec(`ALTER TABLE "KnownArtist" ADD COLUMN "lastPlayedAt" DATETIME;`);
   } catch { /* Column already exists */ }
   db.exec(`COMMIT;`);
 }

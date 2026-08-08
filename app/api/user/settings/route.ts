@@ -20,7 +20,13 @@ export async function GET() {
       select: { spotifyId: true, spotifyUsername: true, spotifyEmail: true, isAdmin: true },
     });
 
-    const knownArtistCount = await prisma.knownArtist.count({ where: { userId } });
+    // Count only pool-eligible artists (any explicit-likes signal) so the header
+    // matches the roster (/api/artists also filters by isPoolEligible). Recently-
+    // played-only rows have signals = '{}' and are excluded from this count —
+    // they're an invisible exclusion layer, not recommendation-driving seeds.
+    const knownArtistCount = await prisma.knownArtist.count({
+      where: { userId, signals: { not: '{}' } },
+    });
     const ai = await getAIConfig();
 
     const nextRun = settings?.scheduleEnabled

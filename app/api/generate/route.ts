@@ -60,7 +60,7 @@ export async function POST(req: Request) {
     // The whole known-artist table is the hard exclusion baseline...
     const allArtists = await prisma.knownArtist.findMany({
       where: { userId },
-      select: { id: true, artistName: true, signals: true, lastSeenAt: true },
+      select: { id: true, artistName: true, signals: true, lastSeenAt: true, lastPlayedAt: true },
     });
 
     // ...filtered by provenance: explicit-likes signals always qualify; artists

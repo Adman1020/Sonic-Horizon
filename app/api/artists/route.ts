@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { getCurrentUserId } from '@/lib/auth';
-import { parseSignals, signalsScore } from '@/lib/artistScore';
+import { parseSignals, signalsScore, isPoolEligible } from '@/lib/artistScore';
 
 // Human-readable source labels shown in the roster. Keys are signal keys stored
 // in knownArtist.signals.
@@ -22,14 +22,17 @@ export async function GET() {
   if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
   try {
-    const total = await prisma.knownArtist.count({ where: { userId } });
-    const artists = await prisma.knownArtist.findMany({
+    // The roster shows only artists that DRIVE recommendations (liked / saved /
+    // followed signals — isPoolEligible). Recently-played-only artists are an
+    // invisible exclusion layer and intentionally excluded from this view.
+    const all = await prisma.knownArtist.findMany({
       where: { userId },
       orderBy: { artistName: 'asc' },
       select: { artistName: true, signals: true, lastSeenAt: true },
     });
+    const poolArtists = all.filter(isPoolEligible);
 
-    const roster = artists.map(a => {
+    const roster = poolArtists.map(a => {
       const signals = parseSignals(a.signals);
       return {
         name: a.artistName,
@@ -39,7 +42,7 @@ export async function GET() {
       };
     });
 
-    return NextResponse.json({ total, artists: roster });
+    return NextResponse.json({ total: poolArtists.length, artists: roster });
   } catch (error) {
     console.error('Artists GET error:', error);
     return NextResponse.json({ error: 'Failed to load artists' }, { status: 500 });

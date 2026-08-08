@@ -14,6 +14,7 @@ import {
   fetchSpotifyFollowedArtists,
   fetchSpotifySavedAlbums,
   fetchSpotifyLikedTracks,
+  fetchSpotifyRecentlyPlayed,
   searchSpotifyTrack,
   searchSpotifyAlbumTracks,
   searchArtistTopTrack,
@@ -21,7 +22,7 @@ import {
   findUserPlaylist,
   getAllPlaylistItemUris,
 } from '@/lib/spotify';
-import { applySignalsToArtists } from '@/lib/artistScoreDb';
+import { applySignalsToArtists, applyRecentlyPlayedArtists, RECENTLY_PLAYED_WINDOW_DAYS } from '@/lib/artistScoreDb';
 import {
   isPoolEligible,
   isBaselineEligible,
@@ -44,7 +45,7 @@ const ARCHIVE_PLAYLIST = 'Sonic Horizon Archive';
 // ─── Step 1: Refresh Spotify explicit-likes signals ───────────────────────────
 
 export type RefreshSignalsResult =
-  | { ok: true; touched: number; addedArtists: number; totalKnownArtists: number; message: string; accessToken: string }
+  | { ok: true; touched: number; addedArtists: number; totalKnownArtists: number; recentlyPlayedSkipped: boolean; message: string; accessToken: string }
   | { ok: false; status: number; message: string; detail: string };
 
 export async function refreshSpotifySignals(userId: string, requestedSources?: string[]): Promise<RefreshSignalsResult> {
@@ -126,6 +127,50 @@ export async function refreshSpotifySignals(userId: string, requestedSources?: s
       }
     }
 
+    // 4. Recently Played (EXCLUSION ONLY — never feeds seeds). Page back up to
+    // ~500 tracks or until plays are older than the window. A 403 means the
+    // token lacks user-read-recently-played (pre-rethink tokens); skip silently
+    // and flag it so the caller/UI can prompt re-authorisation.
+    let recentlyPlayedSkipped = false;
+    const artistPlayedAt = new Map<string, Date>();
+    const cutoffMs = Date.now() - RECENTLY_PLAYED_WINDOW_DAYS * 24 * 60 * 60 * 1000;
+    try {
+      const first = await fetchSpotifyRecentlyPlayed(accessToken, 50);
+      let items: any[] = first?.items ?? [];
+      let beforeCursor: number | undefined = first?.cursors?.before ? Number(first.cursors.before) : undefined;
+      let pageCount = 0;
+      while (items.length > 0 && pageCount < 10) {
+        let oldest = Infinity;
+        for (const item of items) {
+          const playedAtRaw = item?.played_at;
+          const playedAt = playedAtRaw ? new Date(playedAtRaw) : null;
+          if (!playedAt || isNaN(playedAt.getTime())) continue;
+          if (playedAt.getTime() < oldest) oldest = playedAt.getTime();
+          for (const artist of item?.track?.artists ?? []) {
+            const name = artist?.name?.trim();
+            if (!name) continue;
+            const existing = artistPlayedAt.get(name);
+            if (!existing || playedAt > existing) artistPlayedAt.set(name, playedAt);
+          }
+        }
+        if (oldest < cutoffMs) break;
+        if (beforeCursor === undefined) break;
+        const next = await fetchSpotifyRecentlyPlayed(accessToken, 50, beforeCursor);
+        items = next?.items ?? [];
+        beforeCursor = next?.cursors?.before ? Number(next.cursors.before) : undefined;
+        pageCount++;
+      }
+      await applyRecentlyPlayedArtists(userId, artistPlayedAt, new Date());
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (/403/.test(msg)) {
+        recentlyPlayedSkipped = true;
+        console.warn('[spotify:refresh] recently-played scope missing — skipping (re-authorise to enable)');
+      } else {
+        console.warn('[spotify:refresh] recently-played fetch failed:', msg);
+      }
+    }
+
     const existingNames = await prisma.knownArtist.findMany({
       where: { userId },
       select: { artistName: true },
@@ -147,7 +192,8 @@ export async function refreshSpotifySignals(userId: string, requestedSources?: s
       touched,
       addedArtists: newArtistNames.length,
       totalKnownArtists,
-      message: `Scored ${touched} artists from Spotify (${newArtistNames.length} new) across ${scannedSummary}`,
+      recentlyPlayedSkipped,
+      message: `Scored ${touched} artists from Spotify (${newArtistNames.length} new) across ${scannedSummary}${recentlyPlayedSkipped ? ' — recently-played filter skipped (re-authorise to enable)' : ''}`,
       accessToken,
     };
   } catch (error: unknown) {
@@ -217,7 +263,7 @@ export async function generateDiscovery(userId: string, opts: GenerateDiscoveryO
 
   const allArtists = await prisma.knownArtist.findMany({
     where: { userId },
-    select: { id: true, artistName: true, signals: true, lastSeenAt: true },
+    select: { id: true, artistName: true, signals: true, lastSeenAt: true, lastPlayedAt: true },
   });
 
   const baselineArtists = allArtists.filter(isBaselineEligible);

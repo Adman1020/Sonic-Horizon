@@ -5,13 +5,16 @@ import crypto from 'crypto';
 import { resolveSpotifyRedirectUri, getSpotifyClientCredentials } from '@/lib/spotify';
 
 // user-read-email is required for identity login (the callback maps the
-// Spotify account to an app user). The rest cover fetching explicit-likes and
-// syncing output playlists + covers. Removed: user-top-read and
-// user-read-recently-played (no longer used since listening signals are gone).
+// Spotify account to an app user). user-library-read / user-follow-read cover
+// fetching explicit-likes signals that feed the discovery pool. user-read-
+// recently-played supplies a ~90-day exclusion list so we don't recommend
+// things the user just heard (it does NOT feed the seed pool). The rest cover
+// syncing output playlists + covers.
 const SCOPES = [
   'user-read-email',
   'user-library-read',
   'user-follow-read',
+  'user-read-recently-played',
   'playlist-read-private',
   'playlist-modify-public',
   'playlist-modify-private',

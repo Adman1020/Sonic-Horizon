@@ -117,9 +117,11 @@ export function isPoolEligible(a: { signals?: string | null }): boolean {
 }
 
 // Qualified to be remembered as known taste (novelty baseline): any recorded
-// signal, or an artist seen in a fetch (lastSeenAt set).
-export function isBaselineEligible(a: { signals?: string | null; lastSeenAt?: Date | null }): boolean {
-  return Object.keys(parseSignals(a.signals)).length > 0 || !!a.lastSeenAt;
+// signal, an artist seen in a fetch (lastSeenAt set), or an artist heard
+// recently (lastPlayedAt set from user-read-recently-played — exclusion only,
+// never a seed). This is the exclusion set the generate pipeline filters out.
+export function isBaselineEligible(a: { signals?: string | null; lastSeenAt?: Date | null; lastPlayedAt?: Date | null }): boolean {
+  return Object.keys(parseSignals(a.signals)).length > 0 || !!a.lastSeenAt || !!a.lastPlayedAt;
 }
 
 // ─── Seed pool ranking ───────────────────────────────────────────────────────

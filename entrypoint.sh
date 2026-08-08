@@ -21,8 +21,9 @@ for var in \
   fi
 done
 
-# Bind-mounted appdata folders (Unraid) arrive owned by the host's root user.
-# Ensure the container's nextjs user can write them before the server starts.
+# AppData volumes (Unraid bind mount / compose named volume) arrive owned by
+# the host's root user. Ensure the nextjs user can write the DB directory.
+# /config is kept for backward compatibility with older templates.
 mkdir -p /config /data/db
 chown -R nextjs:nodejs /config /data/db
 

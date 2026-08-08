@@ -75,6 +75,8 @@ export default function Home() {
 
   // ── Spotify state
   const [spotifyFetching, setSpotifyFetching] = useState(false);
+  const [pendingAutoFetch, setPendingAutoFetch] = useState(false); // fires a refresh right after OAuth login
+  const [reauthNeeded, setReauthNeeded] = useState(false); // shows the "re-authorise for recently-played" prompt
 
   // ── Imported artists list state
   const [artists, setArtists] = useState<{ name: string; sources: string[]; lastSeenAt: string | Date | null; score: number }[]>([]);
@@ -157,6 +159,8 @@ export default function Home() {
       window.history.replaceState({}, '', '/');
       setUser(prev => prev ? { ...prev, spotifyConnected: true } : prev);
       addLog('Spotify connected successfully!', 'success');
+      setReauthNeeded(false); // fresh auth grants the recently-played scope
+      setPendingAutoFetch(true); // auto-import liked/saved/followed so first run has data
     }
     const spotErr = params.get('spotify_error');
     if (spotErr) {
@@ -176,7 +180,7 @@ export default function Home() {
     window.location.href = '/api/spotify/auth';
   };
 
-  const handleSpotifyFetch = async () => {
+  const runSpotifyFetch = useCallback(async () => {
     setSpotifyFetching(true);
     try {
       const res = await fetch('/api/spotify/fetch', {
@@ -189,10 +193,21 @@ export default function Home() {
       setUser(prev => prev ? { ...prev, knownArtistCount: data.totalKnownArtists ?? prev.knownArtistCount + data.addedArtists } : prev);
       setArtistsLoaded(false);
       setArtists([]);
+      setReauthNeeded(!!data.recentlyPlayedSkipped);
       addLog(`Spotify: ${data.message}`, 'success');
     } catch (e: unknown) { addLog(`Spotify refresh failed: ${e instanceof Error ? e.message : 'Error'}`, 'error'); }
     setSpotifyFetching(false);
-  };
+  }, []);
+
+  const handleSpotifyFetch = runSpotifyFetch;
+
+  // Auto-fetch on first OAuth login (pendingAutoFetch is set by the callback
+  // URL-param effect). Runs once, then clears the flag.
+  useEffect(() => {
+    if (!pendingAutoFetch) return;
+    addLog('Importing your liked songs, saved albums & followed artists…', 'info');
+    runSpotifyFetch().finally(() => setPendingAutoFetch(false));
+  }, [pendingAutoFetch, runSpotifyFetch]);
 
   const fetchRoster = useCallback(async () => {
     if (artistsLoaded || artistsLoading) return;
@@ -581,6 +596,20 @@ OUTPUT JSON SCHEMA:
               : <Badge color="dim">Not connected</Badge>
           }
         >
+          {/* Re-auth prompt: shown only when the user's token lacks the recently-played scope */}
+          {reauthNeeded && (
+            <div className="rounded-lg p-3 text-xs leading-relaxed flex items-center justify-between gap-3" style={{ background: 'rgba(251,191,36,0.08)', border: '1px solid rgba(251,191,36,0.3)' }}>
+              <span style={{ color: '#FBB724' }}>
+                Re-authorise Spotify to enable the recently-played filter (so we don't recommend things you just heard).
+              </span>
+              <a href="/api/spotify/auth"
+                className="px-3 py-1.5 text-xs font-semibold rounded border whitespace-nowrap shrink-0"
+                style={{ borderColor: '#FBB724', color: '#FBB724', background: 'rgba(251,191,36,0.08)' }}>
+                Re-authorise →
+              </a>
+            </div>
+          )}
+
           {/* Connect / Refresh buttons */}
           <div className="flex flex-wrap gap-3 pt-1">
             {!user?.spotifyConnected ? (
@@ -591,18 +620,11 @@ OUTPUT JSON SCHEMA:
                 Connect Spotify via OAuth
               </button>
             ) : (
-              <>
-                <button onClick={handleConnectSpotify}
-                  className="inline-flex items-center gap-2 px-4 py-2.5 font-semibold text-sm rounded transition-colors text-black"
-                  style={{ background: '#1DB954', boxShadow: '0 0 15px rgba(29,185,84,0.2)' }}>
-                  Reconnect Spotify via OAuth
-                </button>
-                <button onClick={handleSpotifyFetch} disabled={spotifyFetching}
-                  className="px-4 py-2 border rounded text-sm font-medium transition-colors disabled:opacity-40"
-                  style={{ borderColor: '#1DB954', color: '#1DB954' }}>
-                  {spotifyFetching ? 'Refreshing…' : 'Refresh from Spotify'}
-                </button>
-              </>
+              <button onClick={handleSpotifyFetch} disabled={spotifyFetching || pendingAutoFetch}
+                className="inline-flex items-center gap-2 px-4 py-2.5 font-semibold text-sm rounded transition-colors text-black disabled:opacity-50"
+                style={{ background: '#1DB954', boxShadow: '0 0 15px rgba(29,185,84,0.2)' }}>
+                {spotifyFetching || pendingAutoFetch ? 'Refreshing…' : 'Refresh from Spotify'}
+              </button>
             )}
           </div>
 

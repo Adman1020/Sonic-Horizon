@@ -47,6 +47,7 @@ model KnownArtist {
   addedAt      DateTime  @default(now())
   signals      String    @default("{}")
   lastSeenAt   DateTime?
+  lastPlayedAt DateTime? // Most recent listen (from user-read-recently-played) — exclusion only, never a seed
 
   @@unique([userId, artistName])
 }

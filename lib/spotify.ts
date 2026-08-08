@@ -100,6 +100,22 @@ export async function fetchSpotifyFollowedArtists(accessToken: string, after?: s
   return response.json();
 }
 
+// Recently-played history — used for EXCLUSION ONLY (don't recommend what the
+// user just heard). Does NOT feed the seed pool. Returns cursor-paginated
+// playHistory items, newest first; page back with `before` (a Unix-ms timestamp
+// from the previous page's cursors.before). The `before` cursor is the
+// earliest played_at on this page; Spotify returns all items before it.
+export async function fetchSpotifyRecentlyPlayed(accessToken: string, limit: number = 50, before?: number) {
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (before !== undefined) params.set('before', String(before));
+  const response = await fetch(
+    `https://api.spotify.com/v1/me/player/recently-played?${params}`,
+    { headers: { Authorization: `Bearer ${accessToken}` } },
+  );
+  if (!response.ok) throw new Error(`Failed to fetch Spotify recently played (${response.status})`);
+  return response.json();
+}
+
 function cleanTitle(title: string) {
   if (!title) return '';
   return title.replace(/\s*\([^)]*\)/g, '').replace(/\s*-[^-]*$/g, '').trim();
