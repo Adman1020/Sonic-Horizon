@@ -27,5 +27,10 @@ done
 mkdir -p /config /data/db
 chown -R nextjs:nodejs /config /data/db
 
+# Docker sets HOSTNAME to the container ID; Next.js standalone server.js then
+# binds to that hostname instead of all interfaces and becomes unreachable from
+# the proxy network. Force a wildcard bind.
+export HOSTNAME=0.0.0.0
+
 echo "Starting server..."
 exec setpriv --reuid=nextjs --regid=nodejs --init-groups node server.js
