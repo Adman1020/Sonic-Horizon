@@ -70,7 +70,7 @@ export default function Home() {
   const [pending, setPending] = useState(false);
 
   // Collapsed state — all collapsed by default
-  const [collapsed, setCollapsed] = useState({ spotify: true, tuning: true, schedule: true });
+  const [collapsed, setCollapsed] = useState({ intro: true, spotify: true, tuning: true, schedule: true });
   const toggle = (s: keyof typeof collapsed) => setCollapsed(p => ({ ...p, [s]: !p[s] }));
 
   // ── Spotify state
@@ -536,6 +536,67 @@ OUTPUT JSON SCHEMA:
       </header>
 
       <main className="max-w-3xl mx-auto px-6 py-10 space-y-6">
+
+        {/* ═══ How it works ══════════════════════════════════════════════════ */}
+        <div className="bg-analog-card border border-analog-border rounded-xl overflow-hidden" style={{ boxShadow: '0 4px 24px rgba(0,0,0,0.4)' }}>
+          <button onClick={() => toggle('intro')}
+            className="w-full flex items-center gap-3 px-6 py-5 hover:bg-analog-bg/30 transition-colors text-left">
+            <span className="text-xl shrink-0">🎧</span>
+            <span className="font-semibold text-white">How Sonic Horizon works</span>
+            <div className="flex-1" />
+            <ChevronIcon collapsed={collapsed.intro} />
+          </button>
+          {!collapsed.intro && (
+            <div className="px-6 pb-7 pt-6 border-t border-analog-border space-y-5">
+              <p className="text-sm text-analog-text-muted leading-relaxed">
+                Sonic Horizon reads your <span className="text-white">Spotify taste profile</span> — liked songs, saved albums
+                and followed artists — and uses an AI curator to surface{' '}
+                <span className="text-white">new music that actually fits you</span>, then pushes it straight into a
+                Spotify playlist. Four quick steps:
+              </p>
+              <ol className="space-y-4">
+                <li className="flex gap-3.5">
+                  <span className="font-mono text-sm font-bold shrink-0 w-6 text-center pt-0.5" style={{ color: '#FF006E' }}>01</span>
+                  <div className="min-w-0">
+                    <p className="text-sm font-semibold text-white">Connect Spotify</p>
+                    <p className="text-xs text-analog-text-muted mt-0.5">
+                      Authorise with OAuth so the app can read your listening history and build playlists on your account.
+                    </p>
+                  </div>
+                </li>
+                <li className="flex gap-3.5">
+                  <span className="font-mono text-sm font-bold shrink-0 w-6 text-center pt-0.5" style={{ color: '#FF006E' }}>02</span>
+                  <div className="min-w-0">
+                    <p className="text-sm font-semibold text-white">Tune your discovery</p>
+                    <p className="text-xs text-analog-text-muted mt-0.5">
+                      Choose how obscure (1–5), pick a discovery mode, and set tracks vs albums and quantity.
+                    </p>
+                  </div>
+                </li>
+                <li className="flex gap-3.5">
+                  <span className="font-mono text-sm font-bold shrink-0 w-6 text-center pt-0.5" style={{ color: '#FF006E' }}>03</span>
+                  <div className="min-w-0">
+                    <p className="text-sm font-semibold text-white">Generate</p>
+                    <p className="text-xs text-analog-text-muted mt-0.5">
+                      The AI studies your taste and recommends fresh music, with a reason why each pick fits. Preview each
+                      track or album right here.
+                    </p>
+                  </div>
+                </li>
+                <li className="flex gap-3.5">
+                  <span className="font-mono text-sm font-bold shrink-0 w-6 text-center pt-0.5" style={{ color: '#FF006E' }}>04</span>
+                  <div className="min-w-0">
+                    <p className="text-sm font-semibold text-white">Listen &amp; keep it fresh</p>
+                    <p className="text-xs text-analog-text-muted mt-0.5">
+                      Push your picks to a Spotify playlist, or schedule automatic refreshes so you always have a fresh
+                      discovery playlist waiting.
+                    </p>
+                  </div>
+                </li>
+              </ol>
+            </div>
+          )}
+        </div>
 
         {/* ═══ Imported Artists list ══════════════════════════════════════════ */}
         {artistsOpen && (
