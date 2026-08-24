@@ -11,7 +11,7 @@
 import type { ProviderType } from '@/lib/llm';
 import { generateLLMJson } from '@/lib/llm';
 import { prisma } from '@/lib/prisma';
-import { rankSeeds, normalizeArtistName, type SeedArtist } from '@/lib/artistScore';
+import { rankSeeds, normalizeArtistName, parseSignals, signalsScore, type SeedArtist } from '@/lib/artistScore';
 import {
   DISCOVERY_MODES,
   DISCOVERY_MODE_DEFAULT,
@@ -191,7 +191,7 @@ export async function buildDiscoveryContext(opts: BuildDiscoveryOpts): Promise<D
         throw new Error(`"${anchorName}" is not in your known artists. Pick one from the Rabbit Hole list.`);
       }
       seeds = anchor
-        ? [{ name: anchor.artistName, weight: anchor.score }]
+        ? [{ name: anchor.artistName, weight: signalsScore(parseSignals(anchor.signals)) }]
         : rankSeeds(pool as any, 1).map(s => ({ name: s.artistName, weight: s.score }));
       laneLabel = anchor?.artistName ?? 'Your #1 artist';
       thesisLines = [def.thesis.replace('[ARTIST]', laneLabel)];
