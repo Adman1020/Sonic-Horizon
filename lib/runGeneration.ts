@@ -309,7 +309,7 @@ THE DISCOVERY DIRECTIVE — follow this exactly. It is the single most important
 ${ctx.thesisLines.join('\n')}
 
 USER'S TOP ARTISTS (scored by taste affinity — higher score = stronger signal). The directive above tells you which of these to anchor on:
-${topArtists.map(a => `  - ${a.name} (score ${a.weight.toFixed(1)})`).join('\n')}
+${topArtists.map(a => `  - ${a.name} (score ${(a.weight ?? 0).toFixed(1)})`).join('\n')}
 
 EXCLUDED ARTISTS — DO NOT RECOMMEND ANY OF THESE:
 ${ctx.exclusionSample.join(', ')}
